@@ -26,6 +26,9 @@ class EpicKitchensDataset(Dataset):
     def __getitem__(self, idx):
         sample = self.data[idx]
         frames = [self.transform(Image.open(frame_path)) for frame_path in sample['frames']]  # Apply transformation
+        # for each frame print the shape
+        for frame in frames:
+            print(frame.shape)
         narration = sample['narration']
         return frames, narration
     
@@ -68,8 +71,6 @@ class EpicKitchensDataLoader:
                 if not (participant_folder/ "rgb_frames" / f"P{participant}_{video_id_formatted}").exists():
                     self.download_data(participant)
 
-            self.untar_data(participant)
-
             print(f"Participant {participant} complete")
     
 
@@ -94,24 +95,36 @@ class EpicKitchensDataLoader:
         os.system(command)
 
 
-    def untar_data(self,participant):
-        if participant < 10:
-            participant_formatted = f"0{participant}"
-        else:
-            participant_formatted = participant
-        participant_folder = self.output_directory/ "EPIC-KITCHENS" / f"P{participant_formatted}"/"rgb_frames"
-        # check if any files are tar files and untar them
-        try:
-            for file in participant_folder.iterdir():
-                if file.suffix == ".tar":
-                    # output_folder file name without the .tar extension
-                    with tarfile.open(file, "r:") as tar:
-                        tar.extractall(path=participant_folder/file.stem)
-                    
-                    # delete the tar file
-                    file.unlink()
-        except:
-            print(f"No tar files found for participant {participant}")
+    def untar_data(self,participants):
+
+        if type(participant) != list:
+            participants = [participant]
+        
+        for participant in participants:
+
+            if participant < 10:
+                participant_formatted = f"0{participant}"
+            else:
+                participant_formatted = participant
+            participant_folder = self.output_directory/ "EPIC-KITCHENS" / f"P{participant_formatted}"/"rgb_frames"
+            # check if any files are tar files and untar them
+            try:
+                # print directory name and contents
+                print(participant_folder)
+                print(list(participant_folder.iterdir()))
+
+                
+                for file in participant_folder.iterdir():
+                    print(file)
+                    if file.suffix == ".tar":
+                        # output_folder file name without the .tar extension
+                        with tarfile.open(file, "r:") as tar:
+                            tar.extractall(path=participant_folder/file.stem)
+                        
+                        # delete the tar file
+                        file.unlink()
+            except:
+                print(f"No tar files found for participant {participant}")
 
 
     def load_csv_data(self, csv_file):
@@ -206,15 +219,16 @@ if __name__ == "__main__":
     # epicKitchenDataLoader = EpicKitchensDataLoader(output_directory="data",frames=20,participant_numbers=[2], video_id=101)
     # epicKitchenDataLoader = EpicKitchensDataLoader(output_directory="data",frames=20,participant_numbers=[16,17,14,19,21,15,13,9,31,5,37])
     # epicKitchenDataLoader = EpicKitchensDataLoader(output_directory="data",frames=20,participant_numbers=[2])
-    epicKitchenDataLoader = EpicKitchensDataLoader(output_directory="data",frames=20,participant_numbers=[7],batch_size=1)
-    epicKitchenDataLoader.untar_data(7)
+    pariticipants = [7]
+    epicKitchenDataLoader = EpicKitchensDataLoader(output_directory="data",frames=20,participant_numbers=pariticipants,batch_size=1)
     # epicKitchenDataLoader.check_data_exists_and_download_if_not()
+    # epicKitchenDataLoader.untar_data(pariticipants)
     epicKitchenDataLoader.load_csv_data("EPIC_100_train.csv")
     dataloader = epicKitchenDataLoader.get_dataloader()
 
     for batch in dataloader:
         frames, narrations = batch
-        print(frames)
+        # print(frames)
         print(narrations)
 
 

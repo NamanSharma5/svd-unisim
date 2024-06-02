@@ -20,6 +20,7 @@ import random
 import logging
 import math
 import os
+# os.environ["HF_HOME"] = "/vol/biomedic3/bglocker/ugproj2324/nns20/svd-unisim/.cache"
 import cv2
 import shutil
 from pathlib import Path
@@ -140,8 +141,9 @@ class DummyDataset(Dataset):
 
         Returns:
             dict: A dictionary containing the 'pixel_values' tensor of shape (16, channels, 320, 512).
-        """
-        return {"pixel_values" : torch.zeros((16,self.channels,self.height, self.width))}
+        # """
+        # return {"pixel_values" : torch.zeros((16,self.channels,self.height, self.width))}
+        return {"pixel_values" : torch.zeros((16,self.channels,256, 256))} # powers of 2 only for height and width
         # Randomly select a folder (representing a video) from the base folder
         chosen_folder = random.choice(self.folders)
         folder_path = os.path.join(self.base_folder, chosen_folder)
@@ -346,7 +348,8 @@ def parse_args():
     parser.add_argument(
         "--pretrained_model_name_or_path",
         type=str,
-        default="stabilityai/stable-video-diffusion-img2vid-xt",
+        # default="stabilityai/stable-video-diffusion-img2vid-xt",
+        default="stabilityai/stable-video-diffusion-img2vid",
         required=False,
         help="Path to pretrained model or model identifier from huggingface.co/models.",
     )
@@ -387,6 +390,7 @@ def parse_args():
     parser.add_argument(
         "--validation_steps",
         type=int,
+        # default=500,
         default=500,
         help=(
             "Run fine-tuning validation every X epochs. The validation process consists of running the text/image prompt"
@@ -947,9 +951,10 @@ def main():
     ):
         add_time_ids = [fps, motion_bucket_id, noise_aug_strength]
 
-        passed_add_embed_dim = unet.module.config.addition_time_embed_dim * \
+        # ONLY ON SINGLE GPU REMOVE unet.module
+        passed_add_embed_dim = unet.config.addition_time_embed_dim * \
             len(add_time_ids)
-        expected_add_embed_dim = unet.module.add_embedding.linear_1.in_features
+        expected_add_embed_dim = unet.add_embedding.linear_1.in_features
 
         if expected_add_embed_dim != passed_add_embed_dim:
             raise ValueError(
@@ -1191,7 +1196,7 @@ def main():
                             for val_img_idx in range(args.num_validation_images):
                                 num_frames = args.num_frames
                                 video_frames = pipeline(
-                                    load_image('demo.jpg').resize((args.width, args.height)),
+                                    load_image('demo.jpeg').resize((args.width, args.height)),
                                     height=args.height,
                                     width=args.width,
                                     num_frames=num_frames,

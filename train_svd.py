@@ -23,6 +23,7 @@ import random
 import logging
 import math
 import os
+os.environ["HF_HOME"] = "/vol/biomedic3/bglocker/ugproj2324/nns20/svd-unisim/.cache"
 import cv2
 import shutil
 from pathlib import Path
@@ -1208,10 +1209,12 @@ def main():
                         with torch.autocast(
                             str(accelerator.device).replace(":0", ""), enabled=accelerator.mixed_precision == "fp16"
                         ):
+                            # print('demo_2.jpg')
                             for val_img_idx in range(args.num_validation_images):
                                 num_frames = args.num_frames
                                 video_frames = pipeline(
-                                    load_image('demo.jpeg').resize((args.width, args.height)),
+                                    # load_image('demo.jpeg').resize((args.width, args.height)),
+                                    load_image('demo_2.jpg').resize((args.width, args.height)),
                                     height=args.height,
                                     width=args.width,
                                     num_frames=num_frames,
@@ -1239,9 +1242,9 @@ def main():
                         del pipeline
                         torch.cuda.empty_cache()
 
-            logs = {"step_loss": loss.detach().item(
-            ), "lr": lr_scheduler.get_last_lr()[0]}
-            progress_bar.set_postfix(**logs)
+            # logs = {"step_loss": loss.detach().item(
+            # ), "lr": lr_scheduler.get_last_lr()[0]}
+            # progress_bar.set_postfix(**logs)
 
             if global_step >= args.max_train_steps:
                 break
