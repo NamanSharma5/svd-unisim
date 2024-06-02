@@ -9,7 +9,7 @@ from PIL import Image
 
 
 ALL_PARTICIPANT_NUMBERS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 35, 37]
-SLIPPAGE_FRAMES = 2
+SLIPPAGE_FRAMES = 3
 
 
 class EpicKitchensDataset(Dataset):
@@ -25,7 +25,7 @@ class EpicKitchensDataset(Dataset):
 
     def __getitem__(self, idx):
         sample = self.data[idx]
-        frames = [self.transform(Image.open(frame)) for frame in sample['frames']]  # Apply transformation
+        frames = [self.transform(Image.open(frame_path)) for frame_path in sample['frames']]  # Apply transformation
         narration = sample['narration']
         return frames, narration
     
@@ -68,7 +68,7 @@ class EpicKitchensDataLoader:
                 if not (participant_folder/ "rgb_frames" / f"P{participant}_{video_id_formatted}").exists():
                     self.download_data(participant)
 
-            # self.untar_data(participant)
+            self.untar_data(participant)
 
             print(f"Participant {participant} complete")
     
@@ -127,9 +127,6 @@ class EpicKitchensDataLoader:
                         if stop_frame - start_frame + 1 >= self.frames:
                             self.process_row(row)
 
-        print(self.dataset)
-
-
     
     def process_row(self, row):
         participant_id = row['participant_id']
@@ -140,7 +137,6 @@ class EpicKitchensDataLoader:
         frames_to_check = [start_frame + i * step for i in range(self.frames)]
         adjusted_frames = self.check_frames_exist(participant_id, video_id, frames_to_check)
         if adjusted_frames:
-            print(f"Participant {participant_id} Video {video_id} Frames {adjusted_frames}")
             frame_paths = [self.get_frame_path(participant_id, video_id, frame) for frame in adjusted_frames]
             self.dataset.append({'frames': frame_paths, 'narration': row['narration']})
 
@@ -183,17 +179,14 @@ if __name__ == "__main__":
     # epicKitchenDataLoader = EpicKichensDataLoader(output_directory="data",participant_numbers=[1])
     # epicKitchenDataLoader = EpicKichensDataLoader(output_directory="data",participant_numbers=[1],video_id=3)
     # epicKitchenDataLoader = EpicKitchensDataLoader(output_directory="data",participant_numbers=[4], video_id=1)
-    epicKitchenDataLoader = EpicKitchensDataLoader(output_directory="data",frames=20,participant_numbers=[2], video_id=101)
-    # epicKitchenDataLoader.check_data_exists_and_download_if_not()
-    epicKitchenDataLoader.load_csv_data("EPIC_100_train.csv")
-    dataloader = epicKitchenDataLoader.get_dataloader()
+    
+    #### FOR KOBI STEP BY STEP
 
-    for batch in dataloader:
-        frames, narrations = batch
-        print(frames)
-        print(narrations)
-
-
+    """
+    1) Pick a participant number from the list of participant numbers 
+     - i.e. 2 ,
+    """
+    
     ### Utility function to help pick a participant number
     def count_participant_ids(csv_path):
         with open(csv_path, 'r') as file:
@@ -208,4 +201,21 @@ if __name__ == "__main__":
             print(f"{key}: {value}")
 
     count_participant_ids("EPIC_100_train.csv")
+    
+    
+    # epicKitchenDataLoader = EpicKitchensDataLoader(output_directory="data",frames=20,participant_numbers=[2], video_id=101)
+    # epicKitchenDataLoader = EpicKitchensDataLoader(output_directory="data",frames=20,participant_numbers=[16,17,14,19,21,15,13,9,31,5,37])
+    # epicKitchenDataLoader = EpicKitchensDataLoader(output_directory="data",frames=20,participant_numbers=[2])
+    epicKitchenDataLoader = EpicKitchensDataLoader(output_directory="data",frames=20,participant_numbers=[7],batch_size=1)
+    epicKitchenDataLoader.untar_data(7)
+    # epicKitchenDataLoader.check_data_exists_and_download_if_not()
+    epicKitchenDataLoader.load_csv_data("EPIC_100_train.csv")
+    dataloader = epicKitchenDataLoader.get_dataloader()
+
+    for batch in dataloader:
+        frames, narrations = batch
+        print(frames)
+        print(narrations)
+
+
 
