@@ -58,7 +58,7 @@ from datasets import AestheticDataset
 from xtend import EmbeddingProjection
 from pipelines.pipeline_stable_video_diffusion_text import StableVideoDiffusionPipeline
 # from diffusers import StableVideoDiffusionPipeline
-# from train_svd import _resize_with_antialiasing
+from train_svd import _resize_with_antialiasing
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
 check_min_version("0.24.0.dev0")
 
@@ -602,12 +602,12 @@ def main():
     text_encoder = CLIPTextModel.from_pretrained(
         'laion/CLIP-ViT-H-14-laion2B-s32B-b79K'
     )
-    # feature_extractor = CLIPImageProcessor.from_pretrained(
-    #     'laion/CLIP-ViT-H-14-laion2B-s32B-b79K'
-    # )
-    # image_encoder = CLIPVisionModelWithProjection.from_pretrained(
-    #     'laion/CLIP-ViT-H-14-laion2B-s32B-b79K'
-    # )
+    feature_extractor = CLIPImageProcessor.from_pretrained(
+        'laion/CLIP-ViT-H-14-laion2B-s32B-b79K'
+    )
+    image_encoder = CLIPVisionModelWithProjection.from_pretrained(
+        'laion/CLIP-ViT-H-14-laion2B-s32B-b79K'
+    )
     vae = AutoencoderKLTemporalDecoder.from_pretrained(
         args.pretrained_model_name_or_path, subfolder="vae", revision=args.revision, variant="fp16")
     unet = UNetSpatioTemporalConditionModel.from_pretrained(
