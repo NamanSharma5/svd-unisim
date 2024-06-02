@@ -15,17 +15,21 @@
 # limitations under the License.
 
 """Script to fine-tune Stable Video Diffusion."""
+print("pre-import")
 import argparse
 import random
 import logging
 import math
 import os
-# os.environ["HF_HOME"] = "/vol/biomedic3/bglocker/ugproj2324/nns20/svd-unisim/.cache"
-import cv2
+os.environ["HF_HOME"] = "/vol/biomedic3/bglocker/ugproj2324/nns20/svd-unisim/.cache"
+import csv
+print("mid import")
+# import cv2
+print("post cv2")
 import shutil
 from pathlib import Path
 from urllib.parse import urlparse
-
+import tarfile
 import accelerate
 import numpy as np
 import PIL
@@ -43,7 +47,7 @@ from packaging import version
 from tqdm.auto import tqdm
 from transformers import CLIPImageProcessor, CLIPVisionModelWithProjection
 from einops import rearrange
-
+print("pre diffusers")
 import diffusers
 from diffusers import StableVideoDiffusionPipeline
 from diffusers.models.lora import LoRALinearLayer
@@ -55,7 +59,7 @@ from diffusers.utils import check_min_version, deprecate, is_wandb_available, lo
 from diffusers.utils.import_utils import is_xformers_available
 
 from torch.utils.data import Dataset
-
+print("post diffusers")
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
 check_min_version("0.24.0.dev0")
 
@@ -143,7 +147,7 @@ class DummyDataset(Dataset):
             dict: A dictionary containing the 'pixel_values' tensor of shape (16, channels, 320, 512).
         # """
         # return {"pixel_values" : torch.zeros((16,self.channels,self.height, self.width))}
-        return {"pixel_values" : torch.zeros((16,self.channels,256, 256))} # powers of 2 only for height and width
+        # return {"pixel_values" : torch.zeros((16,self.channels,256, 256))} # powers of 2 only for height and width
         # Randomly select a folder (representing a video) from the base folder
         chosen_folder = random.choice(self.folders)
         folder_path = os.path.join(self.base_folder, chosen_folder)
@@ -184,7 +188,209 @@ class DummyDataset(Dataset):
 
                 pixel_values[i] = img_normalized
         return {'pixel_values': pixel_values}
+    
 
+
+ALL_PARTICIPANT_NUMBERS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 35, 37]
+SLIPPAGE_FRAMES = 3
+
+class EpicKitchensDataLoader:
+
+
+    def __init__(self, output_directory, frames, participant_numbers = None, video_id = None, batch_size=64):
+        
+        if participant_numbers is None:
+            participant_numbers = ALL_PARTICIPANT_NUMBERS
+        
+        self.participant_numbers = participant_numbers
+        self.video_id = video_id
+        self.frames = frames
+        self.cwd = Path.cwd()
+        self.output_directory = self.cwd / output_directory
+        self.batch_size = batch_size
+        self.dataset = []
+
+    
+    def check_data_exists_and_download_if_not(self):
+        for participant in self.participant_numbers:
+            # numher should be 2 digits so add a leading 0 if it is a single digit
+            if participant < 10:
+                participant_formatted = f"0{participant}"
+            else:
+                participant_formatted = participant
+            participant_folder = self.output_directory/ "EPIC-KITCHENS" / f"P{participant_formatted}"
+
+            if not participant_folder.exists():                # check if video_id is provided if so download only that video, else download all videos
+                self.download_data(participant)
+
+            elif self.video_id:
+                # check if video_id is provided if so download only that video, else download all videos
+                # video id should be 2 digits so add a leading 0 if it is a single digit
+                if self.video_id < 10:
+                    video_id_formatted = f"0{self.video_id}"
+                else:
+                    video_id_formatted = self.video_id
+                if not (participant_folder/ "rgb_frames" / f"P{participant}_{video_id_formatted}").exists():
+                    self.download_data(participant)
+
+            print(f"Participant {participant} complete")
+
+    
+
+    def download_data(self,participant):
+
+        ### have to run the following python command to download the data
+        # python epic_downloader.py --rgb-frames --extension-only --participants {participant} --output_path {self.output_directory}
+        if self.video_id:
+            # construct the video id from the participant number and video id, noting for both single digit numbers we need to add a leading 0
+            if participant < 10:
+                participant_formatted = f"0{participant}"
+            if self.video_id < 10:
+                self.video_id = f"0{self.video_id}"
+            video_id = f"P{participant_formatted}_{self.video_id}"
+            command = f"python epic_downloader.py --rgb-frames --extension-only --participants {participant} --specific-videos {video_id} --output_path {self.output_directory} --train"
+        else:
+            command = f"python epic_downloader.py --rgb-frames --extension-only --participants {participant} --output_path {self.output_directory} --train"
+
+        # RUN THE COMMAND
+        print(f"Downloading data for participant {participant} {self.video_id if self.video_id else ''}")
+        print(command)
+        os.system(command)
+
+
+
+    def untar_data(self,participants):
+
+        if type(participant) != list:
+            participants = [participant]
+        
+        for participant in participants:
+
+            if participant < 10:
+                participant_formatted = f"0{participant}"
+            else:
+                participant_formatted = participant
+            participant_folder = self.output_directory/ "EPIC-KITCHENS" / f"P{participant_formatted}"/"rgb_frames"
+            # check if any files are tar files and untar them
+            try:                
+                for file in participant_folder.iterdir():
+                    if file.suffix == ".tar":
+                        # output_folder file name without the .tar extension
+                        with tarfile.open(file, "r:") as tar:
+                            tar.extractall(path=participant_folder/file.stem)
+                        
+                        # delete the tar file
+                        file.unlink()
+            except:
+                print(f"No tar files found for participant {participant}")
+
+
+    def load_csv_data(self, csv_file):
+        with open(csv_file, 'r') as file:
+            reader = csv.DictReader(file)
+            for row in reader:
+                participant = int(row['participant_id'][1:])
+                if participant in self.participant_numbers:
+                    video_id = int(row['video_id'].split('_')[1])
+                    if self.video_id is None or video_id == self.video_id:
+                        start_frame = int(row['start_frame'])
+                        stop_frame = int(row['stop_frame'])
+                        if stop_frame - start_frame + 1 >= self.frames:
+                            self.process_row(row)
+
+    
+    def process_row(self, row):
+        participant_id = row['participant_id']
+        video_id = row['video_id']
+        start_frame = int(row['start_frame'])
+        stop_frame = int(row['stop_frame'])
+        step = (stop_frame - start_frame) // (self.frames - 1)
+        frames_to_check = [start_frame + i * step for i in range(self.frames)]
+        adjusted_frames = self.check_frames_exist(participant_id, video_id, frames_to_check)
+        if adjusted_frames:
+            frame_paths = [self.get_frame_path(participant_id, video_id, frame) for frame in adjusted_frames]
+            self.dataset.append({'frames': frame_paths, 'narration': row['narration']})
+
+
+    def check_frames_exist(self, participant_id, video_id, frames):
+        adjusted_frames = []
+        for frame in frames:
+            frame_path = self.get_frame_path(participant_id, video_id, frame)
+            # print(frame)
+            # print(frame_path)
+            if not frame_path.exists():
+                found = False
+                for offset in range(1, SLIPPAGE_FRAMES + 1): # slippage of N frames
+                    frame_path = self.get_frame_path(participant_id, video_id, frame - offset)
+                    if frame_path.exists():
+                        found = True
+                        adjusted_frames.append(frame - offset)
+                        break
+                if not found:
+                    return False
+            else:
+                adjusted_frames.append(frame)
+        return adjusted_frames
+    
+    
+
+
+class EpicKitchensDataset(Dataset):
+    def __init__(self, participant_numbers=[7], frames=20, channels=3, height=256, width=256):
+        self.participant_numbers = participant_numbers
+        self.sample_frames = frames
+        self.channels = channels
+        self.height = height
+        self.width = width
+
+        self.epicKitchensDataLoader = EpicKitchensDataLoader(participant_numbers=participant_numbers, frames=frames)
+        self.epicKitchensDataLoader.check_data_exists_and_download_if_not()
+        self.epicKitchensDataLoader.untar_data(participant_numbers)
+        self.epicKitchensDataLoader.load_csv_data('epic_train.csv')
+
+    def __len__(self):
+        return len(self.epicKitchensDataLoader.dataset)
+
+    def __getitem__(self, idx):
+        """
+        Args:
+            idx (int): Index of the sample to return.
+
+        Returns:
+            dict: A dictionary containing the 'pixel_values' tensor of shape (16, channels, 320, 512).
+        # """
+        sample = self.epicKitchensDataLoader.dataset[idx]
+
+        # Ensure the selected folder has at least `sample_frames`` frames
+        if len(self.sample_frames) < sample['frames']:
+            raise ValueError(
+                f"The selected folder contains fewer than `{self.sample_frames}` frames.")
+
+        # Initialize a tensor to store the pixel values
+        pixel_values = torch.empty((self.sample_frames, self.channels, self.height, self.width))
+
+        # Load and process each frame
+        for i, frame_path in enumerate(sample['frames']):
+            with Image.open(frame_path) as img:
+                # Resize the image and convert it to a tensor
+                img_resized = img.resize((self.width, self.height))
+                img_tensor = torch.from_numpy(np.array(img_resized)).float()
+
+                # Normalize the image by scaling pixel values to [-1, 1]
+                img_normalized = img_tensor / 127.5 - 1
+
+                # Rearrange channels if necessary
+                if self.channels == 3:
+                    img_normalized = img_normalized.permute(
+                        2, 0, 1)  # For RGB images
+                elif self.channels == 1:
+                    img_normalized = img_normalized.mean(
+                        dim=2, keepdim=True)  # For grayscale images
+
+                pixel_values[i] = img_normalized
+        return {'pixel_values': pixel_values}
+
+        
 # resizing utils
 # TODO: clean up later
 def _resize_with_antialiasing(input, size, interpolation="bicubic", align_corners=True):
@@ -374,12 +580,12 @@ def parse_args():
     parser.add_argument(
         "--width",
         type=int,
-        default=1024,
+        default=256,
     )
     parser.add_argument(
         "--height",
         type=int,
-        default=576,
+        default=256,
     )
     parser.add_argument(
         "--num_validation_images",
@@ -1258,4 +1464,10 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # main()
+    # test EpicKitchensDataset
+    print('test EpicKitchensDataset')
+    epicKichensDataset = EpicKitchensDataset()
+
+    for i in range(10):
+        print(epicKichensDataset[i])
