@@ -1,6 +1,3 @@
-# from this repo https://github.com/pixeli99/SVD_Xtend/blob/main/train_svd.py
-
-
 #!/usr/bin/env python
 # coding=utf-8
 # Copyright 2023 The HuggingFace Inc. team. All rights reserved.
@@ -142,7 +139,7 @@ class DummyDataset(Dataset):
             idx (int): Index of the sample to return.
 
         Returns:
-            dict: A dictionary containing the 'pixel_values' tensor of shape (16, channels, , ).
+            dict: A dictionary containing the 'pixel_values' tensor of shape (16, channels, 320, 512).
         """
         return {"pixel_values" : torch.zeros((16,self.channels,self.height, self.width))}
         # Randomly select a folder (representing a video) from the base folder
@@ -347,11 +344,6 @@ def parse_args():
         description="Script to train Stable Diffusion XL for InstructPix2Pix."
     )
     parser.add_argument(
-        "--inference_only",
-        type=bool,
-        default=False
-    )
-    parser.add_argument(
         "--pretrained_model_name_or_path",
         type=str,
         default="stabilityai/stable-video-diffusion-img2vid-xt",
@@ -379,14 +371,12 @@ def parse_args():
     parser.add_argument(
         "--width",
         type=int,
-        default=1024
-        # default=456,
+        default=1024,
     )
     parser.add_argument(
         "--height",
         type=int,
-        default=576
-        # default=256,
+        default=576,
     )
     parser.add_argument(
         "--num_validation_images",
@@ -1010,125 +1000,116 @@ def main():
                 if step % args.gradient_accumulation_steps == 0:
                     progress_bar.update(1)
                 continue
-            
-            if not args.inference_only:
-                with accelerator.accumulate(unet):
-                    # first, convert images to latent space.
-                    pixel_values = batch["pixel_values"].to(weight_dtype).to(
-                        accelerator.device, non_blocking=True
+
+            with accelerator.accumulate(unet):
+                # first, convert images to latent space.
+                pixel_values = batch["pixel_values"].to(weight_dtype).to(
+                    accelerator.device, non_blocking=True
+                )
+                conditional_pixel_values = pixel_values[:, 0:1, :, :, :]
+
+                latents = tensor_to_vae_latent(pixel_values, vae)
+
+                # Sample noise that we'll add to the latents
+                noise = torch.randn_like(latents)
+                bsz = latents.shape[0]
+
+                cond_sigmas = rand_log_normal(shape=[bsz,], loc=-3.0, scale=0.5).to(latents)
+                noise_aug_strength = cond_sigmas[0] # TODO: support batch > 1
+                cond_sigmas = cond_sigmas[:, None, None, None, None]
+                conditional_pixel_values = \
+                    torch.randn_like(conditional_pixel_values) * cond_sigmas + conditional_pixel_values
+                conditional_latents = tensor_to_vae_latent(conditional_pixel_values, vae)[:, 0, :, :, :]
+                conditional_latents = conditional_latents / vae.config.scaling_factor
+
+                # Sample a random timestep for each image
+                # P_mean=0.7 P_std=1.6
+                sigmas = rand_log_normal(shape=[bsz,], loc=0.7, scale=1.6).to(latents.device)
+                # Add noise to the latents according to the noise magnitude at each timestep
+                # (this is the forward diffusion process)
+                sigmas = sigmas[:, None, None, None, None]
+                noisy_latents = latents + noise * sigmas
+                timesteps = torch.Tensor(
+                    [0.25 * sigma.log() for sigma in sigmas]).to(accelerator.device)
+
+                inp_noisy_latents = noisy_latents / ((sigmas**2 + 1) ** 0.5)
+
+                # Get the text embedding for conditioning.
+                encoder_hidden_states = encode_image(
+                    pixel_values[:, 0, :, :, :].float())
+
+                # Here I input a fixed numerical value for 'motion_bucket_id', which is not reasonable.
+                # However, I am unable to fully align with the calculation method of the motion score,
+                # so I adopted this approach. The same applies to the 'fps' (frames per second).
+                added_time_ids = _get_add_time_ids(
+                    7, # fixed
+                    127, # motion_bucket_id = 127, fixed
+                    noise_aug_strength, # noise_aug_strength == cond_sigmas
+                    encoder_hidden_states.dtype,
+                    bsz,
+                )
+                added_time_ids = added_time_ids.to(latents.device)
+
+                # Conditioning dropout to support classifier-free guidance during inference. For more details
+                # check out the section 3.2.1 of the original paper https://arxiv.org/abs/2211.09800.
+                if args.conditioning_dropout_prob is not None:
+                    random_p = torch.rand(
+                        bsz, device=latents.device, generator=generator)
+                    # Sample masks for the edit prompts.
+                    prompt_mask = random_p < 2 * args.conditioning_dropout_prob
+                    prompt_mask = prompt_mask.reshape(bsz, 1, 1)
+                    # Final text conditioning.
+                    null_conditioning = torch.zeros_like(encoder_hidden_states)
+                    encoder_hidden_states = torch.where(
+                        prompt_mask, null_conditioning.unsqueeze(1), encoder_hidden_states.unsqueeze(1))
+                    # Sample masks for the original images.
+                    image_mask_dtype = conditional_latents.dtype
+                    image_mask = 1 - (
+                        (random_p >= args.conditioning_dropout_prob).to(
+                            image_mask_dtype)
+                        * (random_p < 3 * args.conditioning_dropout_prob).to(image_mask_dtype)
                     )
-                    print(f'pixel_values before: {pixel_values.shape}')
-                    # test_tensor = torch.ones((pixel_values.shape[0],1,pixel_values.shape[2],pixel_values.shape[3],pixel_values.shape[4])).to(
-                    #     accelerator.device, non_blocking=True)
-                    # pixel_values = torch.cat((pixel_values, test_tensor),dim=1)
-                    print(f'pixel_values after: {pixel_values.shape}')
-                    conditional_pixel_values = pixel_values[:, 0:1, :, :, :]
-                    # conditional_pixel_values = pixel_values[:, 0:2, :, :, :]
+                    image_mask = image_mask.reshape(bsz, 1, 1, 1)
+                    # Final image conditioning.
+                    conditional_latents = image_mask * conditional_latents
 
+                # Concatenate the `conditional_latents` with the `noisy_latents`.
+                conditional_latents = conditional_latents.unsqueeze(
+                    1).repeat(1, noisy_latents.shape[1], 1, 1, 1)
+                inp_noisy_latents = torch.cat(
+                    [inp_noisy_latents, conditional_latents], dim=2)
 
-                    latents = tensor_to_vae_latent(pixel_values, vae)
+                # check https://arxiv.org/abs/2206.00364(the EDM-framework) for more details.
+                target = latents
+                model_pred = unet(
+                    inp_noisy_latents, timesteps, encoder_hidden_states, added_time_ids=added_time_ids).sample
 
-                    # Sample noise that we'll add to the latents
-                    noise = torch.randn_like(latents)
-                    bsz = latents.shape[0]
+                # Denoise the latents
+                c_out = -sigmas / ((sigmas**2 + 1)**0.5)
+                c_skip = 1 / (sigmas**2 + 1)
+                denoised_latents = model_pred * c_out + c_skip * noisy_latents
+                weighing = (1 + sigmas ** 2) * (sigmas**-2.0)
 
-                    cond_sigmas = rand_log_normal(shape=[bsz,], loc=-3.0, scale=0.5).to(latents)
-                    noise_aug_strength = cond_sigmas[0] # TODO: support batch > 1
-                    cond_sigmas = cond_sigmas[:, None, None, None, None]
-                    conditional_pixel_values = \
-                        torch.randn_like(conditional_pixel_values) * cond_sigmas + conditional_pixel_values
-                    conditional_latents = tensor_to_vae_latent(conditional_pixel_values, vae)[:, 0, :, :, :]
-                    conditional_latents = conditional_latents / vae.config.scaling_factor
+                # MSE loss
+                loss = torch.mean(
+                    (weighing.float() * (denoised_latents.float() -
+                     target.float()) ** 2).reshape(target.shape[0], -1),
+                    dim=1,
+                )
+                loss = loss.mean()
 
-                    # Sample a random timestep for each image
-                    # P_mean=0.7 P_std=1.6
-                    sigmas = rand_log_normal(shape=[bsz,], loc=0.7, scale=1.6).to(latents.device)
-                    # Add noise to the latents according to the noise magnitude at each timestep
-                    # (this is the forward diffusion process)
-                    sigmas = sigmas[:, None, None, None, None]
-                    noisy_latents = latents + noise * sigmas
-                    timesteps = torch.Tensor(
-                        [0.25 * sigma.log() for sigma in sigmas]).to(accelerator.device)
+                # Gather the losses across all processes for logging (if we use distributed training).
+                avg_loss = accelerator.gather(
+                    loss.repeat(args.per_gpu_batch_size)).mean()
+                train_loss += avg_loss.item() / args.gradient_accumulation_steps
 
-                    inp_noisy_latents = noisy_latents / ((sigmas**2 + 1) ** 0.5)
-
-                    # Get the text embedding for conditioning.
-                    encoder_hidden_states = encode_image(
-                        pixel_values[:, 0, :, :, :].float())
-
-                    # Here I input a fixed numerical value for 'motion_bucket_id', which is not reasonable.
-                    # However, I am unable to fully align with the calculation method of the motion score,
-                    # so I adopted this approach. The same applies to the 'fps' (frames per second).
-                    added_time_ids = _get_add_time_ids(
-                        7, # fixed
-                        127, # motion_bucket_id = 127, fixed
-                        noise_aug_strength, # noise_aug_strength == cond_sigmas
-                        encoder_hidden_states.dtype,
-                        bsz,
-                    )
-                    added_time_ids = added_time_ids.to(latents.device)
-
-                    # Conditioning dropout to support classifier-free guidance during inference. For more details
-                    # check out the section 3.2.1 of the original paper https://arxiv.org/abs/2211.09800.
-                    if args.conditioning_dropout_prob is not None:
-                        random_p = torch.rand(
-                            bsz, device=latents.device, generator=generator)
-                        # Sample masks for the edit prompts.
-                        prompt_mask = random_p < 2 * args.conditioning_dropout_prob
-                        prompt_mask = prompt_mask.reshape(bsz, 1, 1)
-                        # Final text conditioning.
-                        null_conditioning = torch.zeros_like(encoder_hidden_states)
-                        encoder_hidden_states = torch.where(
-                            prompt_mask, null_conditioning.unsqueeze(1), encoder_hidden_states.unsqueeze(1))
-                        # Sample masks for the original images.
-                        image_mask_dtype = conditional_latents.dtype
-                        image_mask = 1 - (
-                            (random_p >= args.conditioning_dropout_prob).to(
-                                image_mask_dtype)
-                            * (random_p < 3 * args.conditioning_dropout_prob).to(image_mask_dtype)
-                        )
-                        image_mask = image_mask.reshape(bsz, 1, 1, 1)
-                        # Final image conditioning.
-                        conditional_latents = image_mask * conditional_latents
-
-                    # Concatenate the `conditional_latents` with the `noisy_latents`.
-                    conditional_latents = conditional_latents.unsqueeze(
-                        1).repeat(1, noisy_latents.shape[1], 1, 1, 1)
-                    inp_noisy_latents = torch.cat(
-                        [inp_noisy_latents, conditional_latents], dim=2)
-
-                    # check https://arxiv.org/abs/2206.00364(the EDM-framework) for more details.
-                    target = latents
-                    model_pred = unet(
-                        inp_noisy_latents, timesteps, encoder_hidden_states, added_time_ids=added_time_ids).sample
-
-                    # Denoise the latents
-                    c_out = -sigmas / ((sigmas**2 + 1)**0.5)
-                    c_skip = 1 / (sigmas**2 + 1)
-                    denoised_latents = model_pred * c_out + c_skip * noisy_latents
-                    weighing = (1 + sigmas ** 2) * (sigmas**-2.0)
-
-                    # MSE loss
-                    loss = torch.mean(
-                        (weighing.float() * (denoised_latents.float() -
-                        target.float()) ** 2).reshape(target.shape[0], -1),
-                        dim=1,
-                    )
-                    loss = loss.mean()
-
-                    # Gather the losses across all processes for logging (if we use distributed training).
-                    avg_loss = accelerator.gather(
-                        loss.repeat(args.per_gpu_batch_size)).mean()
-                    train_loss += avg_loss.item() / args.gradient_accumulation_steps
-
-                    # Backpropagate
-                    accelerator.backward(loss)
-                    # if accelerator.sync_gradients:
-                    #     accelerator.clip_grad_norm_(unet.parameters(), args.max_grad_norm)
-                    optimizer.step()
-                    lr_scheduler.step()
-                    optimizer.zero_grad()
-
+                # Backpropagate
+                accelerator.backward(loss)
+                # if accelerator.sync_gradients:
+                #     accelerator.clip_grad_norm_(unet.parameters(), args.max_grad_norm)
+                optimizer.step()
+                lr_scheduler.step()
+                optimizer.zero_grad()
 
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:
@@ -1171,7 +1152,6 @@ def main():
                             args.output_dir, f"checkpoint-{global_step}")
                         accelerator.save_state(save_path)
                         logger.info(f"Saved state to {save_path}")
-
                     # sample images!
                     if (
                         (global_step % args.validation_steps == 0)
@@ -1211,7 +1191,7 @@ def main():
                             for val_img_idx in range(args.num_validation_images):
                                 num_frames = args.num_frames
                                 video_frames = pipeline(
-                                    load_image('demo.jpeg').resize((args.width, args.height)),
+                                    load_image('demo.jpg').resize((args.width, args.height)),
                                     height=args.height,
                                     width=args.width,
                                     num_frames=num_frames,
