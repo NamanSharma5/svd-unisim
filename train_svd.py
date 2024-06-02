@@ -127,7 +127,7 @@ class DummyDataset(Dataset):
         self.num_samples = num_samples
         # Define the path to the folder containing video frames
         self.base_folder = 'bdd100k/images/track/mini'
-        self.folders = os.listdir(self.base_folder)
+        # self.folders = os.listdir(self.base_folder)
         self.channels = 3
         self.width = width
         self.height = height
@@ -144,6 +144,7 @@ class DummyDataset(Dataset):
         Returns:
             dict: A dictionary containing the 'pixel_values' tensor of shape (16, channels, 320, 512).
         """
+        return torch.zeros((self.height, self.width))
         # Randomly select a folder (representing a video) from the base folder
         chosen_folder = random.choice(self.folders)
         folder_path = os.path.join(self.base_folder, chosen_folder)
@@ -348,8 +349,8 @@ def parse_args():
     parser.add_argument(
         "--pretrained_model_name_or_path",
         type=str,
-        default=None,
-        required=True,
+        default="stabilityai/stable-video-diffusion-img2vid-xt",
+        required=False,
         help="Path to pretrained model or model identifier from huggingface.co/models.",
     )
     parser.add_argument(
@@ -402,7 +403,7 @@ def parse_args():
         help="The output directory where the model predictions and checkpoints will be written.",
     )
     parser.add_argument(
-        "--seed", type=int, default=None, help="A seed for reproducible training."
+        "--seed", type=int, default=1, help="A seed for reproducible training."
     )
     parser.add_argument(
         "--per_gpu_batch_size",
@@ -1002,7 +1003,8 @@ def main():
                 if step % args.gradient_accumulation_steps == 0:
                     progress_bar.update(1)
                 continue
-
+            
+            """
             with accelerator.accumulate(unet):
                 # first, convert images to latent space.
                 pixel_values = batch["pixel_values"].to(weight_dtype).to(
@@ -1112,7 +1114,7 @@ def main():
                 optimizer.step()
                 lr_scheduler.step()
                 optimizer.zero_grad()
-
+            """
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:
                 if args.use_ema:
@@ -1154,6 +1156,7 @@ def main():
                             args.output_dir, f"checkpoint-{global_step}")
                         accelerator.save_state(save_path)
                         logger.info(f"Saved state to {save_path}")
+
                     # sample images!
                     if (
                         (global_step % args.validation_steps == 0)
@@ -1193,7 +1196,7 @@ def main():
                             for val_img_idx in range(args.num_validation_images):
                                 num_frames = args.num_frames
                                 video_frames = pipeline(
-                                    load_image('demo.jpg').resize((args.width, args.height)),
+                                    load_image('demo.jpeg').resize((args.width, args.height)),
                                     height=args.height,
                                     width=args.width,
                                     num_frames=num_frames,
