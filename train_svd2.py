@@ -1217,7 +1217,13 @@ def main():
                 pixel_values = batch["pixel_values"].to(weight_dtype).to(
                     accelerator.device, non_blocking=True
                 )
-                conditional_pixel_values = pixel_values[:, 0:1, :, :, :]
+                print(f'pixel_values before: {pixel_values.shape}')
+                test_tensor = torch.ones((pixel_values.shape[0],1,pixel_values.shape[2],pixel_values.shape[3],pixel_values.shape[4])).to(
+                    accelerator.device, non_blocking=True)
+                pixel_values = torch.cat((pixel_values, test_tensor),dim=1)
+                print(f'pixel_values after: {pixel_values.shape}')
+                # conditional_pixel_values = pixel_values[:, 0:1, :, :, :]
+                conditional_pixel_values = pixel_values[:, 0:2, :, :, :]
 
                 latents = tensor_to_vae_latent(pixel_values, vae)
 
