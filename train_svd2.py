@@ -15,7 +15,6 @@
 # limitations under the License.
 
 """Script to fine-tune Stable Video Diffusion."""
-print("pre-import")
 import argparse
 import random
 import logging
@@ -23,9 +22,7 @@ import math
 import os
 os.environ["HF_HOME"] = "/vol/biomedic3/bglocker/ugproj2324/nns20/svd-unisim/.cache"
 import csv
-print("mid import")
-# import cv2
-print("post cv2")
+import cv2
 import shutil
 from pathlib import Path
 from urllib.parse import urlparse
@@ -47,7 +44,6 @@ from packaging import version
 from tqdm.auto import tqdm
 from transformers import CLIPImageProcessor, CLIPVisionModelWithProjection
 from einops import rearrange
-print("pre diffusers")
 import diffusers
 from diffusers import StableVideoDiffusionPipeline
 from diffusers.models.lora import LoRALinearLayer
@@ -59,7 +55,6 @@ from diffusers.utils import check_min_version, deprecate, is_wandb_available, lo
 from diffusers.utils.import_utils import is_xformers_available
 
 from torch.utils.data import Dataset
-print("post diffusers")
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
 check_min_version("0.24.0.dev0")
 
@@ -196,7 +191,6 @@ SLIPPAGE_FRAMES = 3
 
 class EpicKitchensDataLoader:
 
-
     def __init__(self, output_directory, frames, participant_numbers = None, video_id = None, batch_size=64):
         
         if participant_numbers is None:
@@ -261,8 +255,8 @@ class EpicKitchensDataLoader:
 
     def untar_data(self,participants):
 
-        if type(participant) != list:
-            participants = [participant]
+        if type(participants) != list:
+            participants = [participants]
         
         for participant in participants:
 
@@ -332,21 +326,26 @@ class EpicKitchensDataLoader:
                 adjusted_frames.append(frame)
         return adjusted_frames
     
-    
+    def get_frame_path(self, participant_id, video_id, frame):
+        frame_str = f"frame_{frame:010d}.jpg"
+        return self.output_directory / "EPIC-KITCHENS" / participant_id / "rgb_frames" / video_id / frame_str
 
 
 class EpicKitchensDataset(Dataset):
-    def __init__(self, participant_numbers=[7], frames=20, channels=3, height=256, width=256):
+    def __init__(self,output_directory="data_pipeline/data", participant_numbers=[7], frames=20, channels=3, height=256, width=256):
         self.participant_numbers = participant_numbers
         self.sample_frames = frames
         self.channels = channels
         self.height = height
         self.width = width
 
-        self.epicKitchensDataLoader = EpicKitchensDataLoader(participant_numbers=participant_numbers, frames=frames)
+        self.epicKitchensDataLoader = EpicKitchensDataLoader(output_directory=output_directory,participant_numbers=participant_numbers, frames=frames)
+        self.cwd = Path.cwd() # this is already handled by epicKitchensDataLoader too
+        self.output_directory = self.cwd / output_directory
+        
         self.epicKitchensDataLoader.check_data_exists_and_download_if_not()
         self.epicKitchensDataLoader.untar_data(participant_numbers)
-        self.epicKitchensDataLoader.load_csv_data('epic_train.csv')
+        self.epicKitchensDataLoader.load_csv_data('data_pipeline/EPIC_100_train.csv')
 
     def __len__(self):
         return len(self.epicKitchensDataLoader.dataset)
@@ -362,7 +361,7 @@ class EpicKitchensDataset(Dataset):
         sample = self.epicKitchensDataLoader.dataset[idx]
 
         # Ensure the selected folder has at least `sample_frames`` frames
-        if len(self.sample_frames) < sample['frames']:
+        if self.sample_frames > len(sample['frames']):
             raise ValueError(
                 f"The selected folder contains fewer than `{self.sample_frames}` frames.")
 
@@ -1064,7 +1063,8 @@ def main():
     # DataLoaders creation:
     args.global_batch_size = args.per_gpu_batch_size * accelerator.num_processes
 
-    train_dataset = DummyDataset(width=args.width, height=args.height, sample_frames=args.num_frames)
+    # train_dataset = DummyDataset(width=args.width, height=args.height, sample_frames=args.num_frames)
+    train_dataset = EpicKitchensDataset()
     sampler = RandomSampler(train_dataset)
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,
@@ -1464,10 +1464,10 @@ def main():
 
 
 if __name__ == "__main__":
-    # main()
-    # test EpicKitchensDataset
-    print('test EpicKitchensDataset')
-    epicKichensDataset = EpicKitchensDataset()
+    main()
 
-    for i in range(10):
-        print(epicKichensDataset[i])
+    # print('test EpicKitchensDataset')
+    # epicKichensDataset = EpicKitchensDataset()
+
+    # for i in range(10):
+    #     print(epicKichensDataset[i])
