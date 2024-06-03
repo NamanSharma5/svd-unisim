@@ -60,6 +60,7 @@ from pipelines.pipeline_stable_video_diffusion_text import StableVideoDiffusionP
 # from diffusers import StableVideoDiffusionPipeline
 from train_svd import _resize_with_antialiasing
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
+from torch.utils.data import Dataset
 check_min_version("0.24.0.dev0")
 
 logger = get_logger(__name__, log_level="INFO")
@@ -104,6 +105,80 @@ def rand_cosine_interpolated(shape, image_d, noise_d_low, noise_d_high, sigma_da
     logsnr = logsnr_schedule_cosine_interpolated(
         u, image_d, noise_d_low, noise_d_high, logsnr_min, logsnr_max)
     return torch.exp(-logsnr / 2) * sigma_data
+
+
+class DummyDataset(Dataset):
+    def __init__(self, num_samples=100000, width=1024, height=576, sample_frames=25):
+        """
+        Args:
+            num_samples (int): Number of samples in the dataset.
+            channels (int): Number of channels, default is 3 for RGB.
+        """
+        self.num_samples = num_samples
+        # Define the path to the folder containing video frames
+        self.base_folder = 'bdd100k/images/track/mini'
+        # self.folders = os.listdir(self.base_folder)
+        self.channels = 3
+        self.width = width
+        self.height = height
+        self.sample_frames = sample_frames
+
+    def __len__(self):
+        return self.num_samples
+
+    def __getitem__(self, idx):
+        """
+        Args:
+            idx (int): Index of the sample to return.
+
+        Returns:
+            dict: A dictionary containing the 'pixel_values' tensor of shape (16, channels, 320, 512).
+        # """
+        # return {"pixel_values" : torch.zeros((16,self.channels,self.height, self.width))}
+        noise_img_w, noise_img_h = 64, 64 # powers of 2 only for height and width
+        return {"pixel_values" : torch.zeros((16,self.channels,noise_img_h, noise_img_w)), "text_prompt" : "hi there this a test", "condition" : torch.zeros((16,self.channels,noise_img_h, noise_img_w))}
+        # Randomly select a folder (representing a video) from the base folder
+        chosen_folder = random.choice(self.folders)
+        folder_path = os.path.join(self.base_folder, chosen_folder)
+        frames = os.listdir(folder_path)
+        # Sort the frames by name
+        frames.sort()
+
+        # Ensure the selected folder has at least `sample_frames`` frames
+        if len(frames) < self.sample_frames:
+            raise ValueError(
+                f"The selected folder '{chosen_folder}' contains fewer than `{self.sample_frames}` frames.")
+
+        # Randomly select a start index for frame sequence
+        start_idx = random.randint(0, len(frames) - self.sample_frames)
+        selected_frames = frames[start_idx:start_idx + self.sample_frames]
+
+        # Initialize a tensor to store the pixel values
+        pixel_values = torch.empty((self.sample_frames, self.channels, self.height, self.width))
+
+        # Load and process each frame
+        for i, frame_name in enumerate(selected_frames):
+            frame_path = os.path.join(folder_path, frame_name)
+            with Image.open(frame_path) as img:
+                # Resize the image and convert it to a tensor
+                img_resized = img.resize((self.width, self.height))
+                img_tensor = torch.from_numpy(np.array(img_resized)).float()
+
+                # Normalize the image by scaling pixel values to [-1, 1]
+                img_normalized = img_tensor / 127.5 - 1
+
+                # Rearrange channels if necessary
+                if self.channels == 3:
+                    img_normalized = img_normalized.permute(
+                        2, 0, 1)  # For RGB images
+                elif self.channels == 1:
+                    img_normalized = img_normalized.mean(
+                        dim=2, keepdim=True)  # For grayscale images
+
+                pixel_values[i] = img_normalized
+        return {'pixel_values': pixel_values}
+
+
 
 min_value = 0.002
 max_value = 700
@@ -763,7 +838,8 @@ def main():
     # DataLoaders creation:
     args.global_batch_size = args.per_gpu_batch_size * accelerator.num_processes
 
-    train_dataset = AestheticDataset("/18940970966/laion-high-aesthetics-output")
+    # train_dataset = AestheticDataset("/18940970966/laion-high-aesthetics-output")
+    train_dataset = DummyDataset(width=args.width, height=args.height, sample_frames=args.num_frames)
     print(f'len(dataset): {len(train_dataset)}')
     sampler = RandomSampler(train_dataset)
     train_dataloader = torch.utils.data.DataLoader(
@@ -862,11 +938,13 @@ def main():
         batch_size,
     ):
         add_time_ids = [fps, motion_bucket_id, noise_aug_strength]
-
-        passed_add_embed_dim = unet.module.config.addition_time_embed_dim * \
+        """for multi gpu uncomment this"""
+        # passed_add_embed_dim = unet.module.config.addition_time_embed_dim * \
+        #     len(add_time_ids)
+        # expected_add_embed_dim = unet.module.add_embedding.linear_1.in_features
+        passed_add_embed_dim = unet.config.addition_time_embed_dim * \
             len(add_time_ids)
-        expected_add_embed_dim = unet.module.add_embedding.linear_1.in_features
-
+        expected_add_embed_dim = unet.add_embedding.linear_1.in_features
         if expected_add_embed_dim != passed_add_embed_dim:
             raise ValueError(
                 f"Model expects an added time embedding vector of length {expected_add_embed_dim}, but a vector of {passed_add_embed_dim} was created. The model has an incorrect config. Please check `unet.config.time_embedding_type` and `text_encoder_2.config.projection_dim`."
@@ -927,7 +1005,9 @@ def main():
                 cond_values = batch["condition"].to(weight_dtype).to(
                     accelerator.device, non_blocking=True
                 )
+                print(f'pixel_values: {pixel_values.shape}')
                 latents = tensor_to_vae_latent(pixel_values, vae)
+                print(f'latents: {latents.shape}')
                 # negative_image_latents
                 conditional_latents = tensor_to_vae_latent(cond_values, vae)[:, 0, :, :, :]
                 conditional_latents = conditional_latents / vae.config.scaling_factor
@@ -945,8 +1025,9 @@ def main():
                 timesteps = torch.Tensor(
                     [0.25 * sigma.log() for sigma in sigmas]).to(accelerator.device)
 
-                inp_noisy_latents = noisy_latents / ((sigmas**2 + 1) ** 0.5)
 
+                inp_noisy_latents = noisy_latents / ((sigmas**2 + 1) ** 0.5)
+                print(f'inp_noisy_latents1: {inp_noisy_latents.shape}')
                 # Get the text embedding for conditioning.
                 encoder_hidden_states = text_encoder(tokenize_captions(batch["text_prompt"]).to(accelerator.device)).pooler_output.unsqueeze(1)
                 # encoder_hidden_states = encode_image(
@@ -992,11 +1073,18 @@ def main():
                     1).repeat(1, noisy_latents.shape[1], 1, 1, 1)
                 inp_noisy_latents = torch.cat(
                     [inp_noisy_latents, conditional_latents], dim=2)
+                print(f'inp_noisy_latents2: {inp_noisy_latents.shape}')
                 # torch.Size([1, 1, 8, 40, 72])
-                inp_noisy_latents = inp_noisy_latents.repeat(1, args.num_frames, 1, 1, 1)
-                target = latents.repeat(1, args.num_frames, 1, 1, 1)
+                print(f'args.num_frames: {args.num_frames}')
+                # inp_noisy_latents = inp_noisy_latents.repeat(1, args.num_frames, 1, 1, 1)
+                print(f'inp_noisy_latents3: {inp_noisy_latents.shape}')
+                # target = latents.repeat(1, args.num_frames, 1, 1, 1)
+                target = latents.repeat(1, 1, 1, 1, 1)
                 # for image training
-                encoder_hidden_states = unet.module.embedding_projection(encoder_hidden_states.float()).to(encoder_hidden_states)
+                """for multigpu uncomment this"""
+                # encoder_hidden_states = unet.module.embedding_projection(encoder_hidden_states.float()).to(encoder_hidden_states)
+                encoder_hidden_states = unet.embedding_projection(encoder_hidden_states.float()).to(encoder_hidden_states)
+                print(f'encoder_hidden_states: {encoder_hidden_states.shape} inp_noisy_latents: {inp_noisy_latents.shape}')
                 model_pred = unet(
                     inp_noisy_latents,
                     timesteps,
@@ -1006,8 +1094,11 @@ def main():
                 # Denoise the latents
                 c_out = -sigmas / ((sigmas**2 + 1)**0.5)
                 c_skip = 1 / (sigmas**2 + 1)
+                print(f'model_pred: {model_pred.shape} c_out: {c_out.shape} c_skip: {c_skip.shape} noisy_latents: {noisy_latents.shape}')
                 denoised_latents = model_pred * c_out + c_skip * noisy_latents
                 weighing = (1 + sigmas ** 2) * (sigmas**-2.0)
+
+                print(f'weighing: {weighing.shape} sigmas: {sigmas.shape} denoised_latentes: {denoised_latents.shape} target: {target.shape}')
 
                 # MSE loss
                 loss = torch.mean(
@@ -1113,7 +1204,7 @@ def main():
                             for val_img_idx in range(args.num_validation_images):
                                 num_frames = args.num_frames
                                 video_frames = pipeline(
-                                    load_image('demo.jpg').resize((args.width, args.height)),
+                                    load_image('demo.jpeg').resize((args.width, args.height)),
                                     prompt='a car driving on the road',
                                     height=args.height,
                                     width=args.width,
