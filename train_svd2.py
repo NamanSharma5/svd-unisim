@@ -143,7 +143,7 @@ class DummyDataset(Dataset):
             dict: A dictionary containing the 'pixel_values' tensor of shape (16, channels, 320, 512).
         # """
         # return {"pixel_values" : torch.zeros((16,self.channels,self.height, self.width))}
-        return {"pixel_values" : torch.zeros((16,self.channels,256, 256))} # powers of 2 only for height and width
+        return {"pixel_values" : torch.zeros((self.num_samples,self.channels,256, 256))} # powers of 2 only for height and width
         # Randomly select a folder (representing a video) from the base folder
         chosen_folder = random.choice(self.folders)
         folder_path = os.path.join(self.base_folder, chosen_folder)
