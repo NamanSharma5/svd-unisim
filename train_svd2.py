@@ -332,7 +332,7 @@ class EpicKitchensDataLoader:
 
 
 class EpicKitchensDataset(Dataset):
-    def __init__(self,output_directory="data_pipeline/data", participant_numbers=[7], frames=20, channels=3, height=256, width=256):
+    def __init__(self,output_directory="data_pipeline/data", participant_numbers=[2,7], frames=20, channels=3, height=256, width=256):
         self.participant_numbers = participant_numbers
         self.sample_frames = frames
         self.channels = channels
@@ -1401,27 +1401,29 @@ def main():
                         ):
                             for val_img_idx in range(args.num_validation_images):
                                 num_frames = args.num_frames
-                                video_frames = pipeline(
-                                    load_image('demo.jpeg').resize((args.width, args.height)),
-                                    height=args.height,
-                                    width=args.width,
-                                    num_frames=num_frames,
-                                    decode_chunk_size=8,
-                                    motion_bucket_id=127,
-                                    fps=7,
-                                    noise_aug_strength=0.02,
-                                    # generator=generator,
-                                ).frames[0]
+                                file_names = ["demo_2.jpg", "demo_3.jpg","demo_4.jpg"]
+                                for file_name in file_names:
+                                    video_frames = pipeline(
+                                        load_image(file_name).resize((args.width, args.height)),
+                                        height=args.height,
+                                        width=args.width,
+                                        num_frames=num_frames,
+                                        decode_chunk_size=8,
+                                        motion_bucket_id=127,
+                                        fps=7,
+                                        noise_aug_strength=0.02,
+                                        # generator=generator,
+                                    ).frames[0]
 
-                                out_file = os.path.join(
-                                    val_save_dir,
-                                    f"step_{global_step}_val_img_{val_img_idx}.mp4",
-                                )
+                                    out_file = os.path.join(
+                                        val_save_dir,
+                                        f"step_{global_step}_val_img_{file_name.split('.')[0]}.mp4",
+                                    )
 
-                                for i in range(num_frames):
-                                    img = video_frames[i]
-                                    video_frames[i] = np.array(img)
-                                export_to_gif(video_frames, out_file, 8)
+                                    for i in range(num_frames):
+                                        img = video_frames[i]
+                                        video_frames[i] = np.array(img)
+                                    export_to_gif(video_frames, out_file, 8)
 
                         if args.use_ema:
                             # Switch back to the original UNet parameters.
