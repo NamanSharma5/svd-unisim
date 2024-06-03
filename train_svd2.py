@@ -859,6 +859,7 @@ def main():
     args.global_batch_size = args.per_gpu_batch_size * accelerator.num_processes
 
     train_dataset = DummyDataset(width=args.width, height=args.height, sample_frames=args.num_frames)
+    print(f'len(dataset): {len(train_dataset)}')
     sampler = RandomSampler(train_dataset)
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,

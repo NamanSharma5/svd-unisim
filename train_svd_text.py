@@ -764,6 +764,7 @@ def main():
     args.global_batch_size = args.per_gpu_batch_size * accelerator.num_processes
 
     train_dataset = AestheticDataset("/18940970966/laion-high-aesthetics-output")
+    print(f'len(dataset): {len(train_dataset)}')
     sampler = RandomSampler(train_dataset)
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,
