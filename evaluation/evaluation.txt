@@ -1,0 +1,7 @@
+data_pipeline/data/EPIC-KITCHENS/P07/rgb_frames/P07_101/frame_0000022789.jpg,open oven
+data_pipeline/data/EPIC-KITCHENS/P07/rgb_frames/P07_101/frame_0000022789.jpg,close oven
+data_pipeline/data/EPIC-KITCHENS/P07/rgb_frames/P07_101/frame_0000022789.jpg,grab oven rack
+data_pipeline/data/EPIC-KITCHENS/P07/rgb_frames/P07_101/frame_0000017025.jpg, grab cheese
+data_pipeline/data/EPIC-KITCHENS/P07/rgb_frames/P07_101/frame_0000017025.jpg, grab knife
+data_pipeline/data/EPIC-KITCHENS/P07/rgb_frames/P07_101/frame_0000017025.jpg, turn on hob
+

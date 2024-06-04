@@ -1477,31 +1477,54 @@ def main():
                         with torch.autocast(
                             str(accelerator.device).replace(":0", ""), enabled=accelerator.mixed_precision == "fp16"
                         ):
+                            prompts_0 = ["open oven", "close oven", "grab oven rack"]
+                            prompts_1 = ["grab coffee", "grab coffee pod", "grab bottle"]
+                            prompts_2 = ["grab cheese", "grab knife"]
+                            prompts_3 = ["grab milk", "close fridge","grab cheese"]
+                            prompts_4 = ["grab butter"]
+                
                             for val_img_idx in range(args.num_validation_images):
                                 num_frames = args.num_frames
-                                for i in range(1,6):
-                                    video_frames = pipeline(
-                                        load_image(f'demo_{i}.jpg').resize((args.width, args.height)),
-                                        prompt='person walking dog',
-                                        height=args.height,
-                                        width=args.width,
-                                        num_frames=num_frames,
-                                        decode_chunk_size=8,
-                                        motion_bucket_id=127,
-                                        fps=7,
-                                        noise_aug_strength=0.02,
-                                        # generator=generator,
-                                    ).frames[0]
+                                for i in range(0,5):
+                                    prompts = ["do nothing"]
+                                    if i == 0:
+                                        prompts = prompts_0
+                                    
+                                    if i == 1:
+                                        prompts = prompts_1
 
-                                    out_file = os.path.join(
-                                        val_save_dir,
-                                        f"step_{global_step}_val_img_demo{i}.mp4",
-                                    )
+                                    if i == 2:
+                                        prompts = prompts_2
 
-                                    for i in range(num_frames):
-                                        img = video_frames[i]
-                                        video_frames[i] = np.array(img)
-                                    export_to_gif(video_frames, out_file, 8)
+                                    if i == 3:
+                                        prompts = prompts_3
+                                        
+                                    if i == 4:
+                                        prompts = prompts_4
+
+                                    for prompt in prompts:
+                                        video_frames = pipeline(
+                                            load_image(f'demo_{i}.jpg').resize((args.width, args.height)),
+                                            prompt=prompt,
+                                            height=args.height,
+                                            width=args.width,
+                                            num_frames=num_frames,
+                                            decode_chunk_size=8,
+                                            motion_bucket_id=127,
+                                            fps=7,
+                                            noise_aug_strength=0.02,
+                                            # generator=generator,
+                                        ).frames[0]
+
+                                        out_file = os.path.join(
+                                            val_save_dir,
+                                            f"step_{global_step}_val_img_demo{i}_{prompt}.mp4",
+                                        )
+
+                                        for i in range(num_frames):
+                                            img = video_frames[i]
+                                            video_frames[i] = np.array(img)
+                                        export_to_gif(video_frames, out_file, 8)
 
                         if args.use_ema:
                             # Switch back to the original UNet parameters.
