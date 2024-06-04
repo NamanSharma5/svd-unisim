@@ -20,10 +20,13 @@ import random
 import logging
 import math
 import os
+# os.environ["HF_HOME"] = "/vol/biomedic3/bglocker/ugproj2324/nns20/svd-unisim/.cache" #NOTE: remove if not naman
+import csv
 import cv2
 import shutil
 from pathlib import Path
 from urllib.parse import urlparse
+import tarfile
 
 import accelerate
 import numpy as np
@@ -54,15 +57,18 @@ from diffusers.training_utils import EMAModel
 from diffusers.utils import check_min_version, deprecate, is_wandb_available, load_image
 from diffusers.utils.import_utils import is_xformers_available
 
-from datasets import AestheticDataset
+# from datasets import AestheticDataset
 from xtend import EmbeddingProjection
 from pipelines.pipeline_stable_video_diffusion_text import StableVideoDiffusionPipeline
 # from diffusers import StableVideoDiffusionPipeline
-# from train_svd import _resize_with_antialiasing
+from train_svd import _resize_with_antialiasing
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
+from torch.utils.data import Dataset
 check_min_version("0.24.0.dev0")
 
 logger = get_logger(__name__, log_level="INFO")
+
+NO_OF_CONDITIONING_FRAMES = 1 # should be at least 1 (as we default condition on the first frame)
 
 # copy from https://github.com/crowsonkb/k-diffusion.git
 def stratified_uniform(shape, group=0, groups=1, dtype=None, device=None):
@@ -104,6 +110,296 @@ def rand_cosine_interpolated(shape, image_d, noise_d_low, noise_d_high, sigma_da
     logsnr = logsnr_schedule_cosine_interpolated(
         u, image_d, noise_d_low, noise_d_high, logsnr_min, logsnr_max)
     return torch.exp(-logsnr / 2) * sigma_data
+
+
+class DummyDataset(Dataset):
+    def __init__(self, num_samples=100000, width=1024, height=576, sample_frames=25):
+        """
+        Args:
+            num_samples (int): Number of samples in the dataset.
+            channels (int): Number of channels, default is 3 for RGB.
+        """
+        self.num_samples = num_samples
+        # Define the path to the folder containing video frames
+        self.base_folder = 'bdd100k/images/track/mini'
+        # self.folders = os.listdir(self.base_folder)
+        self.channels = 3
+        self.width = width
+        self.height = height
+        self.sample_frames = sample_frames
+
+    def __len__(self):
+        return self.num_samples
+
+    def __getitem__(self, idx):
+        """
+        Args:
+            idx (int): Index of the sample to return.
+
+        Returns:
+            dict: A dictionary containing the 'pixel_values' tensor of shape (16, channels, 320, 512).
+        # """
+        # return {"pixel_values" : torch.zeros((16,self.channels,self.height, self.width))}
+        noise_img_w, noise_img_h = 64, 64 # powers of 2 only for height and width
+        return {"pixel_values" : torch.zeros((16,self.channels,noise_img_h, noise_img_w)), "text_prompt" : "hi there this a test", "condition" : torch.zeros((16,self.channels,noise_img_h, noise_img_w))}
+        # Randomly select a folder (representing a video) from the base folder
+        chosen_folder = random.choice(self.folders)
+        folder_path = os.path.join(self.base_folder, chosen_folder)
+        frames = os.listdir(folder_path)
+        # Sort the frames by name
+        frames.sort()
+
+        # Ensure the selected folder has at least `sample_frames`` frames
+        if len(frames) < self.sample_frames:
+            raise ValueError(
+                f"The selected folder '{chosen_folder}' contains fewer than `{self.sample_frames}` frames.")
+
+        # Randomly select a start index for frame sequence
+        start_idx = random.randint(0, len(frames) - self.sample_frames)
+        selected_frames = frames[start_idx:start_idx + self.sample_frames]
+
+        # Initialize a tensor to store the pixel values
+        pixel_values = torch.empty((self.sample_frames, self.channels, self.height, self.width))
+
+        # Load and process each frame
+        for i, frame_name in enumerate(selected_frames):
+            frame_path = os.path.join(folder_path, frame_name)
+            with Image.open(frame_path) as img:
+                # Resize the image and convert it to a tensor
+                img_resized = img.resize((self.width, self.height))
+                img_tensor = torch.from_numpy(np.array(img_resized)).float()
+
+                # Normalize the image by scaling pixel values to [-1, 1]
+                img_normalized = img_tensor / 127.5 - 1
+
+                # Rearrange channels if necessary
+                if self.channels == 3:
+                    img_normalized = img_normalized.permute(
+                        2, 0, 1)  # For RGB images
+                elif self.channels == 1:
+                    img_normalized = img_normalized.mean(
+                        dim=2, keepdim=True)  # For grayscale images
+
+                pixel_values[i] = img_normalized
+        return {'pixel_values': pixel_values}
+
+
+
+
+ALL_PARTICIPANT_NUMBERS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 35, 37]
+SLIPPAGE_FRAMES = 3
+
+class EpicKitchensDataLoader:
+
+
+    def __init__(self, output_directory, frames, participant_numbers = None, video_id = None, batch_size=64):
+        
+        if participant_numbers is None:
+            participant_numbers = ALL_PARTICIPANT_NUMBERS
+        
+        self.participant_numbers = participant_numbers
+        self.video_id = video_id
+        self.frames = frames
+        self.cwd = Path.cwd()
+        self.output_directory = self.cwd / output_directory
+        self.batch_size = batch_size
+        self.dataset = []
+
+    
+    def check_data_exists_and_download_if_not(self):
+        for participant in self.participant_numbers:
+            # numher should be 2 digits so add a leading 0 if it is a single digit
+            if participant < 10:
+                participant_formatted = f"0{participant}"
+            else:
+                participant_formatted = participant
+            participant_folder = self.output_directory/ "EPIC-KITCHENS" / f"P{participant_formatted}"
+
+            if not participant_folder.exists():                # check if video_id is provided if so download only that video, else download all videos
+                self.download_data(participant)
+
+            elif self.video_id:
+                # check if video_id is provided if so download only that video, else download all videos
+                # video id should be 2 digits so add a leading 0 if it is a single digit
+                if self.video_id < 10:
+                    video_id_formatted = f"0{self.video_id}"
+                else:
+                    video_id_formatted = self.video_id
+                if not (participant_folder/ "rgb_frames" / f"P{participant}_{video_id_formatted}").exists():
+                    self.download_data(participant)
+
+            print(f"Participant {participant} complete")
+
+    
+
+    def download_data(self,participant):
+
+        ### have to run the following python command to download the data
+        # python epic_downloader.py --rgb-frames --extension-only --participants {participant} --output_path {self.output_directory}
+        if self.video_id:
+            # construct the video id from the participant number and video id, noting for both single digit numbers we need to add a leading 0
+            if participant < 10:
+                participant_formatted = f"0{participant}"
+            if self.video_id < 10:
+                self.video_id = f"0{self.video_id}"
+            video_id = f"P{participant_formatted}_{self.video_id}"
+            command = f"python epic_downloader.py --rgb-frames --extension-only --participants {participant} --specific-videos {video_id} --output_path {self.output_directory} --train"
+        else:
+            command = f"python epic_downloader.py --rgb-frames --extension-only --participants {participant} --output_path {self.output_directory} --train"
+
+        # RUN THE COMMAND
+        print(f"Downloading data for participant {participant} {self.video_id if self.video_id else ''}")
+        print(command)
+        os.system(command)
+
+
+
+    def untar_data(self,participants):
+
+        if type(participants) != list:
+            participants = [participants]
+        
+        for participant in participants:
+
+            if participant < 10:
+                participant_formatted = f"0{participant}"
+            else:
+                participant_formatted = participant
+            participant_folder = self.output_directory/ "EPIC-KITCHENS" / f"P{participant_formatted}"/"rgb_frames"
+            # check if any files are tar files and untar them
+            try:                
+                for file in participant_folder.iterdir():
+                    if file.suffix == ".tar":
+                        # output_folder file name without the .tar extension
+                        with tarfile.open(file, "r:") as tar:
+                            tar.extractall(path=participant_folder/file.stem)
+                        
+                        # delete the tar file
+                        file.unlink()
+            except:
+                print(f"No tar files found for participant {participant}")
+
+
+    def load_csv_data(self, csv_file):
+        with open(csv_file, 'r') as file:
+            reader = csv.DictReader(file)
+            for row in reader:
+                participant = int(row['participant_id'][1:])
+                if participant in self.participant_numbers:
+                    video_id = int(row['video_id'].split('_')[1])
+                    if self.video_id is None or video_id == self.video_id:
+                        start_frame = int(row['start_frame'])
+                        stop_frame = int(row['stop_frame'])
+                        if stop_frame - start_frame + 1 >= self.frames:
+                            self.process_row(row)
+
+    
+    def process_row(self, row):
+        participant_id = row['participant_id']
+        video_id = row['video_id']
+        start_frame = int(row['start_frame'])
+        stop_frame = int(row['stop_frame'])
+        step = (stop_frame - start_frame) // (self.frames - 1)
+        frames_to_check = [start_frame + i * step for i in range(self.frames)]
+        adjusted_frames = self.check_frames_exist(participant_id, video_id, frames_to_check)
+        if adjusted_frames:
+            frame_paths = [self.get_frame_path(participant_id, video_id, frame) for frame in adjusted_frames]
+            self.dataset.append({'frames': frame_paths, 'narration': row['narration']})
+
+
+    def check_frames_exist(self, participant_id, video_id, frames):
+        adjusted_frames = []
+        for frame in frames:
+            frame_path = self.get_frame_path(participant_id, video_id, frame)
+            # print(frame)
+            # print(frame_path)
+            if not frame_path.exists():
+                found = False
+                for offset in range(1, SLIPPAGE_FRAMES + 1): # slippage of N frames
+                    frame_path = self.get_frame_path(participant_id, video_id, frame - offset)
+                    if frame_path.exists():
+                        found = True
+                        adjusted_frames.append(frame - offset)
+                        break
+                if not found:
+                    return False
+            else:
+                adjusted_frames.append(frame)
+        return adjusted_frames
+    
+      
+    def get_frame_path(self, participant_id, video_id, frame):
+        frame_str = f"frame_{frame:010d}.jpg"
+        return self.output_directory / "EPIC-KITCHENS" / participant_id / "rgb_frames" / video_id / frame_str
+    
+    
+class EpicKitchensDataset(Dataset):
+    def __init__(self,output_directory="data_pipeline/data", participant_numbers=[2,7], frames=20, channels=3, height=256, width=256, no_of_conditioning_frames = NO_OF_CONDITIONING_FRAMES):
+        self.participant_numbers = participant_numbers
+        self.sample_frames = frames
+        self.channels = channels
+        self.height = height
+        self.width = width
+        if no_of_conditioning_frames > 1:
+            self.epicKitchensDataLoader = EpicKitchensDataLoader(output_directory=output_directory,participant_numbers=participant_numbers, frames=frames+no_of_conditioning_frames - 1) # -1 because we condition on first frame anyway
+        else:
+            self.epicKitchensDataLoader = EpicKitchensDataLoader(output_directory=output_directory,participant_numbers=participant_numbers, frames=frames)
+        
+        self.cwd = Path.cwd() # this is already handled by epicKitchensDataLoader too
+        self.output_directory = self.cwd / output_directory
+        self.epicKitchensDataLoader.check_data_exists_and_download_if_not()
+        self.epicKitchensDataLoader.untar_data(participant_numbers)
+        self.epicKitchensDataLoader.load_csv_data('data_pipeline/EPIC_100_train.csv')
+
+    def __len__(self):
+        return len(self.epicKitchensDataLoader.dataset)
+
+    def __getitem__(self, idx):
+        """
+        Args:
+            idx (int): Index of the sample to return.
+
+        Returns:
+            dict: A dictionary containing the 'pixel_values' tensor of shape (16, channels, 320, 512).
+        # """
+        sample = self.epicKitchensDataLoader.dataset[idx]
+
+        # Ensure the selected folder has at least `sample_frames`` frames
+        if self.sample_frames > len(sample['frames']):
+            raise ValueError(
+                f"The selected folder contains fewer than `{self.sample_frames}` frames.")
+
+        # Initialize a tensor to store the pixel values
+        if NO_OF_CONDITIONING_FRAMES > 1:
+            pixel_values = torch.empty((self.sample_frames+NO_OF_CONDITIONING_FRAMES-1, self.channels, self.height, self.width))
+            condition = torch.empty((self.sample_frames+NO_OF_CONDITIONING_FRAMES-1, self.channels, self.height, self.width))
+        else:
+            pixel_values = torch.empty((self.sample_frames, self.channels, self.height, self.width))
+            condition = torch.empty((self.sample_frames, self.channels, self.height, self.width))
+
+        # Load and process each frame
+        for i, frame_path in enumerate(sample['frames']):
+            with Image.open(frame_path) as img:
+                # Resize the image and convert it to a tensor
+                img_resized = img.resize((self.width, self.height))
+                img_tensor = torch.from_numpy(np.array(img_resized)).float()
+
+                # Normalize the image by scaling pixel values to [-1, 1]
+                img_normalized = img_tensor / 127.5 - 1
+
+                # Rearrange channels if necessary
+                if self.channels == 3:
+                    img_normalized = img_normalized.permute(
+                        2, 0, 1)  # For RGB images
+                elif self.channels == 1:
+                    img_normalized = img_normalized.mean(
+                        dim=2, keepdim=True)  # For grayscale images
+
+                pixel_values[i] = img_normalized
+                condition[i] = (img_normalized + torch.randn_like(img_normalized) * 0.02)
+
+        return {'pixel_values' : pixel_values, 'text_prompt' : sample['narration'], 'condition' : condition}
+
 
 min_value = 0.002
 max_value = 700
@@ -248,6 +544,11 @@ def parse_args():
         default="stabilityai/stable-video-diffusion-img2vid-xt",
         required=False,
         help="Path to pretrained model or model identifier from huggingface.co/models.",
+    )
+    parser.add_argument(
+        "--inference_only",
+        type=bool,
+        default=True
     )
     parser.add_argument(
         "--revision",
@@ -608,6 +909,7 @@ def main():
     # image_encoder = CLIPVisionModelWithProjection.from_pretrained(
     #     'laion/CLIP-ViT-H-14-laion2B-s32B-b79K'
     # )
+
     vae = AutoencoderKLTemporalDecoder.from_pretrained(
         args.pretrained_model_name_or_path, subfolder="vae", revision=args.revision, variant="fp16")
     unet = UNetSpatioTemporalConditionModel.from_pretrained(
@@ -763,7 +1065,10 @@ def main():
     # DataLoaders creation:
     args.global_batch_size = args.per_gpu_batch_size * accelerator.num_processes
 
-    train_dataset = AestheticDataset("/18940970966/laion-high-aesthetics-output")
+    # train_dataset = AestheticDataset("/18940970966/laion-high-aesthetics-output")
+    # train_dataset = DummyDataset(width=args.width, height=args.height, sample_frames=args.num_frames)
+    train_dataset = EpicKitchensDataset()
+    print(f'len(dataset): {len(train_dataset)}')
     sampler = RandomSampler(train_dataset)
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,
@@ -861,11 +1166,13 @@ def main():
         batch_size,
     ):
         add_time_ids = [fps, motion_bucket_id, noise_aug_strength]
-
-        passed_add_embed_dim = unet.module.config.addition_time_embed_dim * \
+        """for multi gpu uncomment this"""
+        # passed_add_embed_dim = unet.module.config.addition_time_embed_dim * \
+        #     len(add_time_ids)
+        # expected_add_embed_dim = unet.module.add_embedding.linear_1.in_features
+        passed_add_embed_dim = unet.config.addition_time_embed_dim * \
             len(add_time_ids)
-        expected_add_embed_dim = unet.module.add_embedding.linear_1.in_features
-
+        expected_add_embed_dim = unet.add_embedding.linear_1.in_features
         if expected_add_embed_dim != passed_add_embed_dim:
             raise ValueError(
                 f"Model expects an added time embedding vector of length {expected_add_embed_dim}, but a vector of {passed_add_embed_dim} was created. The model has an incorrect config. Please check `unet.config.time_embedding_type` and `text_encoder_2.config.projection_dim`."
@@ -915,119 +1222,132 @@ def main():
                 if step % args.gradient_accumulation_steps == 0:
                     progress_bar.update(1)
                 continue
-
-            with accelerator.accumulate(unet):
-                # We want to learn the denoising process w.r.t the edited images which
-                # are conditioned on the original image (which was edited) and the edit instruction.
-                # So, first, convert images to latent space.
-                pixel_values = batch["pixel_values"].to(weight_dtype).to(
-                    accelerator.device, non_blocking=True
-                )
-                cond_values = batch["condition"].to(weight_dtype).to(
-                    accelerator.device, non_blocking=True
-                )
-                latents = tensor_to_vae_latent(pixel_values, vae)
-                # negative_image_latents
-                conditional_latents = tensor_to_vae_latent(cond_values, vae)[:, 0, :, :, :]
-                conditional_latents = conditional_latents / vae.config.scaling_factor
-        
-                # Sample noise that we'll add to the latents
-                noise = torch.randn_like(latents)
-                bsz = latents.shape[0]
-                # Sample a random timestep for each image
-                sigmas = rand_cosine_interpolated(shape=[bsz,], image_d=image_d, noise_d_low=noise_d_low, noise_d_high=noise_d_high,
-                                                  sigma_data=sigma_data, min_value=min_value, max_value=max_value).to(latents.device)
-                # Add noise to the latents according to the noise magnitude at each timestep
-                # (this is the forward diffusion process)
-                sigmas = sigmas[:, None, None, None, None]
-                noisy_latents = latents + noise * sigmas
-                timesteps = torch.Tensor(
-                    [0.25 * sigma.log() for sigma in sigmas]).to(accelerator.device)
-
-                inp_noisy_latents = noisy_latents / ((sigmas**2 + 1) ** 0.5)
-
-                # Get the text embedding for conditioning.
-                encoder_hidden_states = text_encoder(tokenize_captions(batch["text_prompt"]).to(accelerator.device)).pooler_output.unsqueeze(1)
-                # encoder_hidden_states = encode_image(
-                #     pixel_values[:, 0, :, :, :].float())
-
-                added_time_ids = _get_add_time_ids(
-                    7, # fps
-                    0, # motion
-                    0.02, # noise_aug_strength == 0.02
-                    encoder_hidden_states.dtype,
-                    bsz,
-                )
-                added_time_ids = added_time_ids.to(latents.device)
-
-                # Conditioning dropout to support classifier-free guidance during inference. For more details
-                # check out the section 3.2.1 of the original paper https://arxiv.org/abs/2211.09800.
-                if args.conditioning_dropout_prob is not None:
-                    random_p = torch.rand(
-                        bsz, device=latents.device, generator=generator)
-                    # Sample masks for the edit prompts.
-                    prompt_mask = random_p < 2 * args.conditioning_dropout_prob
-                    prompt_mask = prompt_mask.reshape(bsz, 1, 1)
-                    # Final text conditioning.
-                    # null_conditioning = torch.zeros_like(encoder_hidden_states)
-                    # encoder_hidden_states = torch.where(
-                    #     prompt_mask, null_conditioning.unsqueeze(1), encoder_hidden_states.unsqueeze(1))
-                    null_conditioning = text_encoder(tokenize_captions([""]).to(accelerator.device)).pooler_output.unsqueeze(1)
-                    encoder_hidden_states = torch.where(prompt_mask, null_conditioning, encoder_hidden_states)
-
-                    # Sample masks for the original images.
-                    image_mask_dtype = conditional_latents.dtype
-                    image_mask = 1 - (
-                        (random_p >= args.conditioning_dropout_prob).to(
-                            image_mask_dtype)
-                        * (random_p < 3 * args.conditioning_dropout_prob).to(image_mask_dtype)
+            if not args.inference_only:
+                with accelerator.accumulate(unet):
+                    # We want to learn the denoising process w.r.t the edited images which
+                    # are conditioned on the original image (which was edited) and the edit instruction.
+                    # So, first, convert images to latent space.
+                    pixel_values = batch["pixel_values"].to(weight_dtype).to(
+                        accelerator.device, non_blocking=True
                     )
-                    image_mask = image_mask.reshape(bsz, 1, 1, 1)
-                    # Final image conditioning.
-                    conditional_latents = image_mask * conditional_latents
+                    cond_values = batch["condition"].to(weight_dtype).to(
+                        accelerator.device, non_blocking=True
+                    )
+                    print(f'pixel_values: {pixel_values.shape}')
+                    latents = tensor_to_vae_latent(pixel_values, vae)
+                    print(f'latents: {latents.shape}')
+                    # negative_image_latents
+                    conditional_latents = tensor_to_vae_latent(cond_values, vae)[:, 0, :, :, :]
+                    conditional_latents = conditional_latents / vae.config.scaling_factor
+            
+                    # Sample noise that we'll add to the latents
+                    noise = torch.randn_like(latents)
+                    bsz = latents.shape[0]
+                    # Sample a random timestep for each image
+                    sigmas = rand_cosine_interpolated(shape=[bsz,], image_d=image_d, noise_d_low=noise_d_low, noise_d_high=noise_d_high,
+                                                    sigma_data=sigma_data, min_value=min_value, max_value=max_value).to(latents.device)
+                    # Add noise to the latents according to the noise magnitude at each timestep
+                    # (this is the forward diffusion process)
+                    sigmas = sigmas[:, None, None, None, None]
+                    noisy_latents = latents + noise * sigmas
+                    timesteps = torch.Tensor(
+                        [0.25 * sigma.log() for sigma in sigmas]).to(accelerator.device)
 
-                # Concatenate the `conditional_latents` with the `noisy_latents`.
-                conditional_latents = conditional_latents.unsqueeze(
-                    1).repeat(1, noisy_latents.shape[1], 1, 1, 1)
-                inp_noisy_latents = torch.cat(
-                    [inp_noisy_latents, conditional_latents], dim=2)
-                # torch.Size([1, 1, 8, 40, 72])
-                inp_noisy_latents = inp_noisy_latents.repeat(1, args.num_frames, 1, 1, 1)
-                target = latents.repeat(1, args.num_frames, 1, 1, 1)
-                # for image training
-                encoder_hidden_states = unet.module.embedding_projection(encoder_hidden_states.float()).to(encoder_hidden_states)
-                model_pred = unet(
-                    inp_noisy_latents,
-                    timesteps,
-                    encoder_hidden_states,
-                    added_time_ids=added_time_ids).sample
 
-                # Denoise the latents
-                c_out = -sigmas / ((sigmas**2 + 1)**0.5)
-                c_skip = 1 / (sigmas**2 + 1)
-                denoised_latents = model_pred * c_out + c_skip * noisy_latents
-                weighing = (1 + sigmas ** 2) * (sigmas**-2.0)
+                    inp_noisy_latents = noisy_latents / ((sigmas**2 + 1) ** 0.5)
+                    print(f'inp_noisy_latents1: {inp_noisy_latents.shape}')
+                    # Get the text embedding for conditioning.
+                    encoder_hidden_states = text_encoder(tokenize_captions(batch["text_prompt"]).to(accelerator.device)).pooler_output.unsqueeze(1)
+                    # encoder_hidden_states = encode_image(
+                    #     pixel_values[:, 0, :, :, :].float())
 
-                # MSE loss
-                loss = torch.mean(
-                    (weighing.float() * (denoised_latents.float() -
-                     target.float()) ** 2).reshape(target.shape[0], -1),
-                    dim=1,
-                )
-                loss = loss.mean()
+                    added_time_ids = _get_add_time_ids(
+                        7, # fps
+                        0, # motion
+                        0.02, # noise_aug_strength == 0.02
+                        encoder_hidden_states.dtype,
+                        bsz,
+                    )
+                    added_time_ids = added_time_ids.to(latents.device)
 
-                # Gather the losses across all processes for logging (if we use distributed training).
-                avg_loss = accelerator.gather(
-                    loss.repeat(args.per_gpu_batch_size)).mean()
-                train_loss += avg_loss.item() / args.gradient_accumulation_steps
+                    # Conditioning dropout to support classifier-free guidance during inference. For more details
+                    # check out the section 3.2.1 of the original paper https://arxiv.org/abs/2211.09800.
+                    if args.conditioning_dropout_prob is not None:
+                        random_p = torch.rand(
+                            bsz, device=latents.device, generator=generator)
+                        # Sample masks for the edit prompts.
+                        prompt_mask = random_p < 2 * args.conditioning_dropout_prob
+                        prompt_mask = prompt_mask.reshape(bsz, 1, 1)
+                        # Final text conditioning.
+                        # null_conditioning = torch.zeros_like(encoder_hidden_states)
+                        # encoder_hidden_states = torch.where(
+                        #     prompt_mask, null_conditioning.unsqueeze(1), encoder_hidden_states.unsqueeze(1))
+                        null_conditioning = text_encoder(tokenize_captions([""]).to(accelerator.device)).pooler_output.unsqueeze(1)
+                        encoder_hidden_states = torch.where(prompt_mask, null_conditioning, encoder_hidden_states)
 
-                # Backpropagate
-                accelerator.backward(loss)
-                # if accelerator.sync_gradients:
-                #     accelerator.clip_grad_norm_(unet.parameters(), args.max_grad_norm)
-                optimizer.step()
-                lr_scheduler.step()
-                optimizer.zero_grad()
+                        # Sample masks for the original images.
+                        image_mask_dtype = conditional_latents.dtype
+                        image_mask = 1 - (
+                            (random_p >= args.conditioning_dropout_prob).to(
+                                image_mask_dtype)
+                            * (random_p < 3 * args.conditioning_dropout_prob).to(image_mask_dtype)
+                        )
+                        image_mask = image_mask.reshape(bsz, 1, 1, 1)
+                        # Final image conditioning.
+                        conditional_latents = image_mask * conditional_latents
+
+                    # Concatenate the `conditional_latents` with the `noisy_latents`.
+                    conditional_latents = conditional_latents.unsqueeze(
+                        1).repeat(1, noisy_latents.shape[1], 1, 1, 1)
+                    inp_noisy_latents = torch.cat(
+                        [inp_noisy_latents, conditional_latents], dim=2)
+                    print(f'inp_noisy_latents2: {inp_noisy_latents.shape}')
+                    # torch.Size([1, 1, 8, 40, 72])
+                    print(f'args.num_frames: {args.num_frames}')
+                    # inp_noisy_latents = inp_noisy_latents.repeat(1, args.num_frames, 1, 1, 1)
+                    print(f'inp_noisy_latents3: {inp_noisy_latents.shape}')
+                    # target = latents.repeat(1, args.num_frames, 1, 1, 1)
+                    target = latents.repeat(1, 1, 1, 1, 1)
+                    # for image training
+                    """for multigpu uncomment this"""
+                    # encoder_hidden_states = unet.module.embedding_projection(encoder_hidden_states.float()).to(encoder_hidden_states)
+                    encoder_hidden_states = unet.embedding_projection(encoder_hidden_states.float()).to(encoder_hidden_states)
+                    print(f'encoder_hidden_states: {encoder_hidden_states.shape} inp_noisy_latents: {inp_noisy_latents.shape}')
+                    model_pred = unet(
+                        inp_noisy_latents,
+                        timesteps,
+                        encoder_hidden_states,
+                        added_time_ids=added_time_ids).sample
+
+                    # Denoise the latents
+                    c_out = -sigmas / ((sigmas**2 + 1)**0.5)
+                    c_skip = 1 / (sigmas**2 + 1)
+                    print(f'model_pred: {model_pred.shape} c_out: {c_out.shape} c_skip: {c_skip.shape} noisy_latents: {noisy_latents.shape}')
+                    denoised_latents = model_pred * c_out + c_skip * noisy_latents
+                    weighing = (1 + sigmas ** 2) * (sigmas**-2.0)
+
+                    print(f'weighing: {weighing.shape} sigmas: {sigmas.shape} denoised_latentes: {denoised_latents.shape} target: {target.shape}')
+
+                    # MSE loss
+                    loss = torch.mean(
+                        (weighing.float() * (denoised_latents.float() -
+                        target.float()) ** 2).reshape(target.shape[0], -1),
+                        dim=1,
+                    )
+                    loss = loss.mean()
+
+                    # Gather the losses across all processes for logging (if we use distributed training).
+                    avg_loss = accelerator.gather(
+                        loss.repeat(args.per_gpu_batch_size)).mean()
+                    train_loss += avg_loss.item() / args.gradient_accumulation_steps
+
+                    # Backpropagate
+                    accelerator.backward(loss)
+                    # if accelerator.sync_gradients:
+                    #     accelerator.clip_grad_norm_(unet.parameters(), args.max_grad_norm)
+                    optimizer.step()
+                    lr_scheduler.step()
+                    optimizer.zero_grad()
 
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:
@@ -1090,8 +1410,9 @@ def main():
                             text_encoder=accelerator.unwrap_model(
                                 text_encoder),
                             tokenizer=tokenizer,
-                            # image_encoder=accelerator.unwrap_model(
-                            #     image_encoder),
+                            image_encoder=accelerator.unwrap_model(
+                                image_encoder),
+                            feature_extractor=feature_extractor,
                             vae=accelerator.unwrap_model(vae),
                             revision=args.revision,
                             torch_dtype=weight_dtype,
@@ -1112,13 +1433,14 @@ def main():
                             for val_img_idx in range(args.num_validation_images):
                                 num_frames = args.num_frames
                                 video_frames = pipeline(
-                                    load_image('demo.jpg').resize((args.width, args.height)),
-                                    prompt='a car driving on the road',
+                                    load_image('demo.jpeg').resize((args.width, args.height)),
+                                    prompt='person walking dog',
                                     height=args.height,
                                     width=args.width,
                                     num_frames=num_frames,
                                     decode_chunk_size=8,
-                                    motion_bucket_id=0,
+                                    # motion_bucket_id=0,
+                                    motion_bucket_id=127,
                                     fps=7.0,
                                     noise_aug_strength=0.02,
                                     # generator=generator,
@@ -1176,3 +1498,9 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+    # print('test EpicKitchensDataset')
+    # epicKichensDataset = EpicKitchensDataset()
+
+    # for i in range(10):
+    #     print(epicKichensDataset[i])
