@@ -54,6 +54,7 @@ from diffusers.optimization import get_scheduler
 from diffusers.training_utils import EMAModel
 from diffusers.utils import check_min_version, deprecate, is_wandb_available, load_image
 from diffusers.utils.import_utils import is_xformers_available
+from xtend import EmbeddingProjection
 
 from torch.utils.data import Dataset
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
@@ -938,6 +939,9 @@ def main():
 
     """""""""""""" 
 
+    unet.embedding_projection = EmbeddingProjection(
+            in_features=1024, hidden_size=1024,
+    )
 
     # Freeze vae and image_encoder
     vae.requires_grad_(False)
@@ -955,6 +959,7 @@ def main():
         weight_dtype = torch.bfloat16
 
     # Move image_encoder and vae to gpu and cast to weight_dtype
+    text_encoder.to(accelerator.device, dtype=weight_dtype)
     image_encoder.to(accelerator.device, dtype=weight_dtype)
     vae.to(accelerator.device, dtype=weight_dtype)
     # unet.to(accelerator.device, dtype=weight_dtype)
@@ -1047,7 +1052,7 @@ def main():
     # Customize the parameters that need to be trained; if necessary, you can uncomment them yourself.
 
     for name, para in unet.named_parameters():
-        if 'temporal_transformer_block' in name:
+        if 'temporal_transformer_block' in name or 'embedding_projection' in name:
             parameters_list.append(para)
             para.requires_grad = True
         else:
@@ -1112,6 +1117,12 @@ def main():
     unet, optimizer, lr_scheduler, train_dataloader = accelerator.prepare(
         unet, optimizer, lr_scheduler, train_dataloader
     )
+
+    def tokenize_captions(captions):
+        inputs = tokenizer(
+            captions, max_length=tokenizer.model_max_length, padding="max_length", truncation=True, return_tensors="pt"
+        )
+        return inputs.input_ids
 
     if args.use_ema:
         ema_unet.to(accelerator.device)
