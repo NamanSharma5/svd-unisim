@@ -15,6 +15,7 @@
 # limitations under the License.
 
 """Script to fine-tune Stable Video Diffusion."""
+print("pre-import")
 import argparse
 import random
 import logging
@@ -22,7 +23,9 @@ import math
 import os
 os.environ["HF_HOME"] = "/vol/biomedic3/bglocker/ugproj2324/nns20/svd-unisim/.cache"
 import csv
+print("mid import")
 import cv2
+print("post cv2")
 import shutil
 from pathlib import Path
 from urllib.parse import urlparse
@@ -44,6 +47,7 @@ from packaging import version
 from tqdm.auto import tqdm
 from transformers import CLIPImageProcessor, CLIPVisionModelWithProjection
 from einops import rearrange
+print("pre diffusers")
 import diffusers
 from diffusers import StableVideoDiffusionPipeline
 from diffusers.models.lora import LoRALinearLayer
@@ -55,10 +59,13 @@ from diffusers.utils import check_min_version, deprecate, is_wandb_available, lo
 from diffusers.utils.import_utils import is_xformers_available
 
 from torch.utils.data import Dataset
+print("post diffusers")
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
 check_min_version("0.24.0.dev0")
 
 logger = get_logger(__name__, log_level="INFO")
+
+NO_OF_CONDITIONING_FRAMES = 4 # should be at least 1 (as we default condition on the first frame)
 
 # copy from https://github.com/crowsonkb/k-diffusion.git
 def stratified_uniform(shape, group=0, groups=1, dtype=None, device=None):
@@ -190,6 +197,7 @@ ALL_PARTICIPANT_NUMBERS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16
 SLIPPAGE_FRAMES = 3
 
 class EpicKitchensDataLoader:
+
 
     def __init__(self, output_directory, frames, participant_numbers = None, video_id = None, batch_size=64):
         
@@ -326,23 +334,29 @@ class EpicKitchensDataLoader:
                 adjusted_frames.append(frame)
         return adjusted_frames
     
+      
     def get_frame_path(self, participant_id, video_id, frame):
         frame_str = f"frame_{frame:010d}.jpg"
         return self.output_directory / "EPIC-KITCHENS" / participant_id / "rgb_frames" / video_id / frame_str
+    
+    
+
 
 
 class EpicKitchensDataset(Dataset):
-    def __init__(self,output_directory="data_pipeline/data", participant_numbers=[2,7], frames=20, channels=3, height=256, width=256):
+    def __init__(self,output_directory="data_pipeline/data", participant_numbers=[2,7], frames=20, channels=3, height=256, width=256, no_of_conditioning_frames = NO_OF_CONDITIONING_FRAMES):
         self.participant_numbers = participant_numbers
         self.sample_frames = frames
         self.channels = channels
         self.height = height
         self.width = width
-
-        self.epicKitchensDataLoader = EpicKitchensDataLoader(output_directory=output_directory,participant_numbers=participant_numbers, frames=frames)
+        if no_of_conditioning_frames > 1:
+            self.epicKitchensDataLoader = EpicKitchensDataLoader(output_directory=output_directory,participant_numbers=participant_numbers, frames=frames+no_of_conditioning_frames - 1) # -1 because we condition on first frame anyway
+        else:
+            self.epicKitchensDataLoader = EpicKitchensDataLoader(output_directory=output_directory,participant_numbers=participant_numbers, frames=frames)
+        
         self.cwd = Path.cwd() # this is already handled by epicKitchensDataLoader too
         self.output_directory = self.cwd / output_directory
-        
         self.epicKitchensDataLoader.check_data_exists_and_download_if_not()
         self.epicKitchensDataLoader.untar_data(participant_numbers)
         self.epicKitchensDataLoader.load_csv_data('data_pipeline/EPIC_100_train.csv')
@@ -366,7 +380,10 @@ class EpicKitchensDataset(Dataset):
                 f"The selected folder contains fewer than `{self.sample_frames}` frames.")
 
         # Initialize a tensor to store the pixel values
-        pixel_values = torch.empty((self.sample_frames, self.channels, self.height, self.width))
+        if NO_OF_CONDITIONING_FRAMES > 1:
+            pixel_values = torch.empty((self.sample_frames+NO_OF_CONDITIONING_FRAMES-1, self.channels, self.height, self.width))
+        else:
+            pixel_values = torch.empty((self.sample_frames, self.channels, self.height, self.width))
 
         # Load and process each frame
         for i, frame_path in enumerate(sample['frames']):
@@ -1217,7 +1234,13 @@ def main():
                 pixel_values = batch["pixel_values"].to(weight_dtype).to(
                     accelerator.device, non_blocking=True
                 )
-                conditional_pixel_values = pixel_values[:, 0:1, :, :, :]
+                # print(f'pixel_values before: {pixel_values.shape}')
+                # test_tensor = torch.ones((pixel_values.shape[0],1,pixel_values.shape[2],pixel_values.shape[3],pixel_values.shape[4])).to(
+                #     accelerator.device, non_blocking=True)
+                # pixel_values = torch.cat((pixel_values, test_tensor),dim=1)
+                # print(f'pixel_values after: {pixel_values.shape}')
+                # conditional_pixel_values = pixel_values[:, 0:1, :, :, :]
+                conditional_pixel_values = pixel_values[:, 0:NO_OF_CONDITIONING_FRAMES, :, :, :]
 
                 latents = tensor_to_vae_latent(pixel_values, vae)
 
@@ -1401,10 +1424,9 @@ def main():
                         ):
                             for val_img_idx in range(args.num_validation_images):
                                 num_frames = args.num_frames
-                                file_names = ["demo_2.jpg", "demo_3.jpg","demo_4.jpg"]
-                                for file_name in file_names:
+                                for i in range(1,6):
                                     video_frames = pipeline(
-                                        load_image(file_name).resize((args.width, args.height)),
+                                        load_image(f'demo_{i}.jpg').resize((args.width, args.height)),
                                         height=args.height,
                                         width=args.width,
                                         num_frames=num_frames,
@@ -1417,7 +1439,7 @@ def main():
 
                                     out_file = os.path.join(
                                         val_save_dir,
-                                        f"step_{global_step}_val_img_{file_name.split('.')[0]}.mp4",
+                                        f"step_{global_step}_val_img_demo{i}.mp4",
                                     )
 
                                     for i in range(num_frames):
