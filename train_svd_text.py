@@ -910,6 +910,8 @@ def main():
     #     'laion/CLIP-ViT-H-14-laion2B-s32B-b79K'
     # )
 
+    """"""""""""""
+
     vae = AutoencoderKLTemporalDecoder.from_pretrained(
         args.pretrained_model_name_or_path, subfolder="vae", revision=args.revision, variant="fp16")
     unet = UNetSpatioTemporalConditionModel.from_pretrained(
@@ -918,6 +920,9 @@ def main():
         low_cpu_mem_usage=True,
         variant="fp16",
     )
+
+
+    ##########################################
     unet.embedding_projection = EmbeddingProjection(
             in_features=1024, hidden_size=1024,
     )
@@ -947,6 +952,7 @@ def main():
         weight_dtype = torch.bfloat16
 
     # Move image_encoder and vae to gpu and cast to weight_dtype
+    ##########################################
     text_encoder.to(accelerator.device, dtype=weight_dtype)
     # image_encoder.to(accelerator.device, dtype=weight_dtype)
     vae.to(accelerator.device, dtype=weight_dtype)
@@ -1036,7 +1042,7 @@ def main():
 
     unet.requires_grad_(True)
     parameters_list = []
-
+    ##########################################
     for name, para in unet.named_parameters():
         if 'embedding_projection' in name: # or 'attn2.to_k' in name or 'attn2.to_v' in name:
             parameters_list.append(para)
@@ -1097,6 +1103,7 @@ def main():
         unet, optimizer, lr_scheduler, train_dataloader
     )
     
+    ##########################################
     def tokenize_captions(captions):
         inputs = tokenizer(
             captions, max_length=tokenizer.model_max_length, padding="max_length", truncation=True, return_tensors="pt"

@@ -61,7 +61,7 @@ check_min_version("0.24.0.dev0")
 
 logger = get_logger(__name__, log_level="INFO")
 
-NO_OF_CONDITIONING_FRAMES = 4 # should be at least 1 (as we default condition on the first frame)
+NO_OF_CONDITIONING_FRAMES = 1 # should be at least 1 (as we default condition on the first frame)
 
 # copy from https://github.com/crowsonkb/k-diffusion.git
 def stratified_uniform(shape, group=0, groups=1, dtype=None, device=None):
@@ -400,6 +400,7 @@ class EpicKitchensDataset(Dataset):
                         dim=2, keepdim=True)  # For grayscale images
 
                 pixel_values[i] = img_normalized
+        # TODO return "text_prompt" too
         return {'pixel_values': pixel_values}
 
         
@@ -933,11 +934,17 @@ def main():
         low_cpu_mem_usage=True,
         variant="fp16",
     )
+    
+
+    """""""""""""" 
+
 
     # Freeze vae and image_encoder
     vae.requires_grad_(False)
     image_encoder.requires_grad_(False)
     unet.requires_grad_(False)
+
+
 
     # For mixed precision training we cast the text_encoder and vae weights to half-precision
     # as these models are only used for inference, keeping weights in full precision is not required.
@@ -1242,9 +1249,9 @@ def main():
 
                 # Sample noise that we'll add to the latents
                 noise = torch.randn_like(latents)
-                bsz = latents.shape[0]
+                bsz_img = latents.shape[0]
 
-                cond_sigmas = rand_log_normal(shape=[bsz,], loc=-3.0, scale=0.5).to(latents)
+                cond_sigmas = rand_log_normal(shape=[bsz_img,], loc=-3.0, scale=0.5).to(latents)
                 noise_aug_strength = cond_sigmas[0] # TODO: support batch > 1
                 cond_sigmas = cond_sigmas[:, None, None, None, None]
                 conditional_pixel_values = \
@@ -1254,7 +1261,7 @@ def main():
 
                 # Sample a random timestep for each image
                 # P_mean=0.7 P_std=1.6
-                sigmas = rand_log_normal(shape=[bsz,], loc=0.7, scale=1.6).to(latents.device)
+                sigmas = rand_log_normal(shape=[bsz_img,], loc=0.7, scale=1.6).to(latents.device)
                 # Add noise to the latents according to the noise magnitude at each timestep
                 # (this is the forward diffusion process)
                 sigmas = sigmas[:, None, None, None, None]
@@ -1265,8 +1272,9 @@ def main():
                 inp_noisy_latents = noisy_latents / ((sigmas**2 + 1) ** 0.5)
 
                 # Get the text embedding for conditioning.
-                encoder_hidden_states = encode_image(
+                img_encoder_hidden_states = encode_image(
                     pixel_values[:, 0, :, :, :].float())
+                txt_encoder_hidden_states = text_encoder(tokenize_captions(batch["text_prompt"]).to(accelerator.device)).pooler_output.unsqueeze(1)
 
                 # Here I input a fixed numerical value for 'motion_bucket_id', which is not reasonable.
                 # However, I am unable to fully align with the calculation method of the motion score,
@@ -1275,33 +1283,55 @@ def main():
                     7, # fixed
                     127, # motion_bucket_id = 127, fixed
                     noise_aug_strength, # noise_aug_strength == cond_sigmas
-                    encoder_hidden_states.dtype,
-                    bsz,
+                    img_encoder_hidden_states.dtype,
+                    bsz_img,
                 )
                 added_time_ids = added_time_ids.to(latents.device)
 
                 # Conditioning dropout to support classifier-free guidance during inference. For more details
                 # check out the section 3.2.1 of the original paper https://arxiv.org/abs/2211.09800.
                 if args.conditioning_dropout_prob is not None:
-                    random_p = torch.rand(
-                        bsz, device=latents.device, generator=generator)
+                    ### img emb null conditioning ###
+                    random_p_img = torch.rand(
+                        bsz_img, device=latents.device, generator=generator)
                     # Sample masks for the edit prompts.
-                    prompt_mask = random_p < 2 * args.conditioning_dropout_prob
-                    prompt_mask = prompt_mask.reshape(bsz, 1, 1)
+                    prompt_mask_img = random_p_img < 2 * args.conditioning_dropout_prob
+                    prompt_mask_img = prompt_mask_img.reshape(bsz_img, 1, 1)
                     # Final text conditioning.
-                    null_conditioning = torch.zeros_like(encoder_hidden_states)
-                    encoder_hidden_states = torch.where(
-                        prompt_mask, null_conditioning.unsqueeze(1), encoder_hidden_states.unsqueeze(1))
+                    null_conditioning_img = torch.zeros_like(img_encoder_hidden_states)
+                    img_encoder_hidden_states = torch.where(
+                        prompt_mask_img, null_conditioning_img.unsqueeze(1), img_encoder_hidden_states.unsqueeze(1))
+                    
+
+
+                    ### text emb null conditioning ###
+                    random_p_txt = torch.rand(
+                        bsz_img, device=latents.device, generator=generator)
+                    # Sample masks for the edit prompts.
+                    prompt_mask_txt = random_p_txt < 2 * args.conditioning_dropout_prob
+                    prompt_mask_txt = prompt_mask_txt.reshape(bsz_img, 1, 1)
+                    # Final text conditioning.
+                    # null_conditioning = torch.zeros_like(encoder_hidden_states)
+                    # encoder_hidden_states = torch.where(
+                    #     prompt_mask, null_conditioning.unsqueeze(1), encoder_hidden_states.unsqueeze(1))
+                    
+                    # TODO add text_encoder() and tokenize_captions() from text script to this
+                    null_conditioning_txt = text_encoder(tokenize_captions([""]).to(accelerator.device)).pooler_output.unsqueeze(1)
+                    txt_encoder_hidden_states = torch.where(prompt_mask_txt, null_conditioning_txt, txt_encoder_hidden_states)
+                    
+                    
+                    
                     # Sample masks for the original images.
                     image_mask_dtype = conditional_latents.dtype
                     image_mask = 1 - (
-                        (random_p >= args.conditioning_dropout_prob).to(
+                        (random_p_img >= args.conditioning_dropout_prob).to(
                             image_mask_dtype)
-                        * (random_p < 3 * args.conditioning_dropout_prob).to(image_mask_dtype)
+                        * (random_p_img < 3 * args.conditioning_dropout_prob).to(image_mask_dtype)
                     )
-                    image_mask = image_mask.reshape(bsz, 1, 1, 1)
+                    image_mask = image_mask.reshape(bsz_img, 1, 1, 1)
                     # Final image conditioning.
                     conditional_latents = image_mask * conditional_latents
+
 
                 # Concatenate the `conditional_latents` with the `noisy_latents`.
                 conditional_latents = conditional_latents.unsqueeze(
@@ -1311,8 +1341,9 @@ def main():
 
                 # check https://arxiv.org/abs/2206.00364(the EDM-framework) for more details.
                 target = latents
+                txt_encoder_hidden_states = unet.embedding_projection(encoder_hidden_states.float()).to(encoder_hidden_states)
                 model_pred = unet(
-                    inp_noisy_latents, timesteps, encoder_hidden_states, added_time_ids=added_time_ids).sample
+                    inp_noisy_latents, timesteps, img_encoder_hidden_states, added_time_ids=added_time_ids).sample
 
                 # Denoise the latents
                 c_out = -sigmas / ((sigmas**2 + 1)**0.5)
