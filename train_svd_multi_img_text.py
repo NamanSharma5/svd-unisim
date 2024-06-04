@@ -1365,7 +1365,7 @@ def main():
                 target = latents
                 txt_encoder_hidden_states = unet.embedding_projection(txt_encoder_hidden_states.float()).to(txt_encoder_hidden_states)
                 model_pred = unet(
-                    inp_noisy_latents, timesteps, img_encoder_hidden_states, added_time_ids=added_time_ids).sample
+                    inp_noisy_latents, timesteps, torch.cat([img_encoder_hidden_states,txt_encoder_hidden_states],dim=1), added_time_ids=added_time_ids).sample
 
                 # Denoise the latents
                 c_out = -sigmas / ((sigmas**2 + 1)**0.5)
