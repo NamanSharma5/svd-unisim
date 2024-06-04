@@ -20,7 +20,7 @@ import random
 import logging
 import math
 import os
-# os.environ["HF_HOME"] = "/vol/biomedic3/bglocker/ugproj2324/nns20/svd-unisim/.cache"
+os.environ["HF_HOME"] = "/home/kk2720/svd-unisim/.cache"
 import csv
 import cv2
 import shutil
@@ -1201,9 +1201,9 @@ def main():
         add_time_ids = [fps, motion_bucket_id, noise_aug_strength]
 
         # ONLY ON SINGLE GPU REMOVE unet.module
-        passed_add_embed_dim = unet.config.addition_time_embed_dim * \
+        passed_add_embed_dim = unet.module.config.addition_time_embed_dim * \
             len(add_time_ids)
-        expected_add_embed_dim = unet.add_embedding.linear_1.in_features
+        expected_add_embed_dim = unet.module.add_embedding.linear_1.in_features
 
         if expected_add_embed_dim != passed_add_embed_dim:
             raise ValueError(
@@ -1368,7 +1368,7 @@ def main():
 
                 # check https://arxiv.org/abs/2206.00364(the EDM-framework) for more details.
                 target = latents
-                txt_encoder_hidden_states = unet.embedding_projection(txt_encoder_hidden_states.float()).to(txt_encoder_hidden_states)
+                txt_encoder_hidden_states = unet.module.embedding_projection(txt_encoder_hidden_states.float()).to(txt_encoder_hidden_states)
                 model_pred = unet(
                     inp_noisy_latents, timesteps, torch.cat([img_encoder_hidden_states,txt_encoder_hidden_states],dim=1), added_time_ids=added_time_ids).sample
 
