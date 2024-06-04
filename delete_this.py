@@ -1416,6 +1416,8 @@ def main():
                             image_encoder=accelerator.unwrap_model(
                                 image_encoder),
                             vae=accelerator.unwrap_model(vae),
+                            text_encoder=accelerator.unwrap_model(text_encoder),    
+                            tokenizer = accelerator.unwrap_model(text_tokenzier),                            
                             revision=args.revision,
                             torch_dtype=weight_dtype,
                         )
@@ -1483,6 +1485,8 @@ def main():
             image_encoder=accelerator.unwrap_model(image_encoder),
             vae=accelerator.unwrap_model(vae),
             unet=unet,
+            text_encoder=accelerator.unwrap_model(text_encoder),    
+            tokenizer = accelerator.unwrap_model(text_tokenzier),  
             revision=args.revision,
         )
         pipeline.save_pretrained(args.output_dir)
