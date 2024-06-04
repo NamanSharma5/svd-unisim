@@ -261,8 +261,8 @@ class StableVideoDiffusionPipeline(DiffusionPipeline):
                 attention_mask = None
 
             prompt_embeds = self.text_encoder(text_input_ids.to(device), attention_mask=attention_mask)
-            # prompt_embeds = prompt_embeds[1].unsqueeze(1) # was used in the text to video fine tuning script
-            prompt_embeds = prompt_embeds[0] # this was original stable diffusion text to image pipeline
+            prompt_embeds = prompt_embeds.pooler_output.unsqueeze(1) # was used in the text to video fine tuning script
+            # prompt_embeds = prompt_embeds[0] # this was original stable diffusion text to image pipeline
 
         if self.text_encoder is not None:
             prompt_embeds_dtype = self.text_encoder.dtype
@@ -317,8 +317,8 @@ class StableVideoDiffusionPipeline(DiffusionPipeline):
                 uncond_input.input_ids.to(device),
                 attention_mask=attention_mask,
             )
-            # negative_prompt_embeds = negative_prompt_embeds[1].unsqueeze(1) # similar to prompt embeds but with negative prompt
-            negative_prompt_embeds = negative_prompt_embeds[0] # similar to prompt embeds, this is how original stable diffusion text to image pipeline
+            negative_prompt_embeds = negative_prompt_embeds.pooler_output.unsqueeze(1) # similar to prompt embeds but with negative prompt
+            # negative_prompt_embeds = negative_prompt_embeds[0] # similar to prompt embeds, this is how original stable diffusion text to image pipeline
 
         if do_classifier_free_guidance:
             # duplicate unconditional embeddings for each generation per prompt, using mps friendly method
