@@ -65,7 +65,7 @@ check_min_version("0.24.0.dev0")
 
 logger = get_logger(__name__, log_level="INFO")
 
-NO_OF_CONDITIONING_FRAMES = 2 # should be at least 1 (as we default condition on the first frame)
+NO_OF_CONDITIONING_FRAMES = 4 # should be at least 1 (as we default condition on the first frame)
 
 # copy from https://github.com/crowsonkb/k-diffusion.git
 def stratified_uniform(shape, group=0, groups=1, dtype=None, device=None):
@@ -1424,27 +1424,28 @@ def main():
                         ):
                             for val_img_idx in range(args.num_validation_images):
                                 num_frames = args.num_frames
-                                video_frames = pipeline(
-                                    load_image('demo.jpeg').resize((args.width, args.height)),
-                                    height=args.height,
-                                    width=args.width,
-                                    num_frames=num_frames,
-                                    decode_chunk_size=8,
-                                    motion_bucket_id=127,
-                                    fps=7,
-                                    noise_aug_strength=0.02,
-                                    # generator=generator,
-                                ).frames[0]
+                                for i in range(1,6):
+                                    video_frames = pipeline(
+                                        load_image(f'demo_{i}.jpg').resize((args.width, args.height)),
+                                        height=args.height,
+                                        width=args.width,
+                                        num_frames=num_frames,
+                                        decode_chunk_size=8,
+                                        motion_bucket_id=127,
+                                        fps=7,
+                                        noise_aug_strength=0.02,
+                                        # generator=generator,
+                                    ).frames[0]
 
-                                out_file = os.path.join(
-                                    val_save_dir,
-                                    f"step_{global_step}_val_img_{val_img_idx}.mp4",
-                                )
+                                    out_file = os.path.join(
+                                        val_save_dir,
+                                        f"step_{global_step}_val_img_demo{i}.mp4",
+                                    )
 
-                                for i in range(num_frames):
-                                    img = video_frames[i]
-                                    video_frames[i] = np.array(img)
-                                export_to_gif(video_frames, out_file, 8)
+                                    for i in range(num_frames):
+                                        img = video_frames[i]
+                                        video_frames[i] = np.array(img)
+                                    export_to_gif(video_frames, out_file, 8)
 
                         if args.use_ema:
                             # Switch back to the original UNet parameters.
