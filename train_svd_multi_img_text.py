@@ -1294,9 +1294,14 @@ def main():
 
                 inp_noisy_latents = noisy_latents / ((sigmas**2 + 1) ** 0.5)
 
-                # Get the text embedding for conditioning.
+                # TODO use this code in future to condition on multi frames:
+                """
                 img_encoder_hidden_states = encode_image(
                     pixel_values[:, 0:NO_OF_CONDITIONING_FRAMES, :, :, :].float())
+                """
+                # Get the text embedding for conditioning.
+                img_encoder_hidden_states = encode_image(
+                    pixel_values[:, 0, :, :, :].float())
                 txt_encoder_hidden_states = text_encoder(tokenize_captions(batch["text_prompt"]).to(accelerator.device)).pooler_output.unsqueeze(1)
 
                 # Here I input a fixed numerical value for 'motion_bucket_id', which is not reasonable.
@@ -1477,6 +1482,7 @@ def main():
                                 for i in range(1,6):
                                     video_frames = pipeline(
                                         load_image(f'demo_{i}.jpg').resize((args.width, args.height)),
+                                        prompt='person walking dog',
                                         height=args.height,
                                         width=args.width,
                                         num_frames=num_frames,
