@@ -19,9 +19,10 @@ from typing import Callable, Dict, List, Optional, Union
 import numpy as np
 import PIL.Image
 import torch
-from transformers import CLIPTextModel, CLIPTokenizer
+from transformers import CLIPTextModel, CLIPTokenizer, CLIPVisionModelWithProjection, CLIPImageProcessor
 
-from diffusers.image_processor import VaeImageProcessor
+from diffusers.image_processor import VaeImageProcessor, PipelineImageInput
+from diffusers.video_processor import VideoProcessor
 from diffusers.models import AutoencoderKLTemporalDecoder, UNetSpatioTemporalConditionModel
 from diffusers.schedulers import EulerDiscreteScheduler
 from diffusers.utils import BaseOutput, logging
@@ -98,20 +99,74 @@ class StableVideoDiffusionPipeline(DiffusionPipeline):
         vae: AutoencoderKLTemporalDecoder,
         text_encoder: CLIPTextModel,
         tokenizer: CLIPTokenizer,
+        image_encoder: CLIPVisionModelWithProjection,
         unet: UNetSpatioTemporalConditionModel,
         scheduler: EulerDiscreteScheduler,
+        feature_extractor: CLIPImageProcessor,
     ):
         super().__init__()
 
         self.register_modules(
             vae=vae,
+            image_encoder=image_encoder,
             unet=unet,
             scheduler=scheduler,
             text_encoder=text_encoder,
             tokenizer=tokenizer,
+            feature_extractor=feature_extractor,
         )
         self.vae_scale_factor = 2 ** (len(self.vae.config.block_out_channels) - 1)
-        self.image_processor = VaeImageProcessor(vae_scale_factor=self.vae_scale_factor)
+        # self.image_processor = VaeImageProcessor(vae_scale_factor=self.vae_scale_factor)
+        self.video_processor = VideoProcessor(do_resize=True, vae_scale_factor=self.vae_scale_factor)
+    
+    def _encode_image(
+        self,
+        image: PipelineImageInput,
+        device: Union[str, torch.device],
+        num_videos_per_prompt: int,
+        do_classifier_free_guidance: bool,
+    ) -> torch.Tensor:
+        dtype = next(self.image_encoder.parameters()).dtype
+
+        if not isinstance(image, torch.Tensor):
+            image = self.video_processor.pil_to_numpy(image)
+            image = self.video_processor.numpy_to_pt(image)
+
+            # We normalize the image before resizing to match with the original implementation.
+            # Then we unnormalize it after resizing.
+            image = image * 2.0 - 1.0
+            image = _resize_with_antialiasing(image, (224, 224))
+            image = (image + 1.0) / 2.0
+
+        # Normalize the image with for CLIP input
+        image = self.feature_extractor(
+            images=image,
+            do_normalize=True,
+            do_center_crop=False,
+            do_resize=False,
+            do_rescale=False,
+            return_tensors="pt",
+        ).pixel_values
+        print(f'clip past: {image.shape}')
+
+        image = image.to(device=device, dtype=dtype)
+        image_embeddings = self.image_encoder(image).image_embeds
+        image_embeddings = image_embeddings.unsqueeze(1)
+
+        # duplicate image embeddings for each generation per prompt, using mps friendly method
+        bs_embed, seq_len, _ = image_embeddings.shape
+        image_embeddings = image_embeddings.repeat(1, num_videos_per_prompt, 1)
+        image_embeddings = image_embeddings.view(bs_embed * num_videos_per_prompt, seq_len, -1)
+
+        if do_classifier_free_guidance:
+            negative_image_embeddings = torch.zeros_like(image_embeddings)
+
+            # For classifier free guidance, we need to do two forward passes.
+            # Here we concatenate the unconditional and text embeddings into a single batch
+            # to avoid doing two forward passes
+            image_embeddings = torch.cat([negative_image_embeddings, image_embeddings])
+
+        return image_embeddings
 
     # Copied from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion.StableDiffusionPipeline.encode_prompt
     def encode_prompt(
@@ -525,7 +580,7 @@ class StableVideoDiffusionPipeline(DiffusionPipeline):
         # corresponds to doing no classifier free guidance.
         do_classifier_free_guidance = max_guidance_scale > 1.0
 
-        # 3. Encode input text prompt
+        # 3. Encode input text prompt & input image 
         prompt_embeds, negative_prompt_embeds = self.encode_prompt(
             prompt,
             device,
@@ -533,6 +588,8 @@ class StableVideoDiffusionPipeline(DiffusionPipeline):
             do_classifier_free_guidance,
             negative_prompt,
         )
+        image_embeddings = self._encode_image(image, device, num_videos_per_prompt, do_classifier_free_guidance)
+        
         # For classifier free guidance, we need to do two forward passes.
         # Here we concatenate the unconditional and text embeddings into a single batch
         # to avoid doing two forward passes
@@ -545,7 +602,8 @@ class StableVideoDiffusionPipeline(DiffusionPipeline):
         fps = fps - 1
 
         # 4. Encode input image using VAE
-        image = self.image_processor.preprocess(image, height=height, width=width)
+        # image = self.image_processor.preprocess(image, height=height, width=width)
+        image = self.video_processor.preprocess(image, height=height, width=width).to(device)
         noise = randn_tensor(image.shape, generator=generator, device=image.device, dtype=image.dtype)
         image = image + noise_aug_strength * noise
 
@@ -614,10 +672,14 @@ class StableVideoDiffusionPipeline(DiffusionPipeline):
                 # Concatenate image_latents over channels dimention
                 latent_model_input = torch.cat([latent_model_input, image_latents], dim=2)
                 # predict the noise residual
+                # print(f'image_embeddings: {image_embeddings.shape} text emb: {self.unet.embedding_projection(prompt_embeds.float()).to(prompt_embeds).shape}')
+                # return
                 noise_pred = self.unet(
                     latent_model_input,
                     t,
-                    encoder_hidden_states=self.unet.embedding_projection(prompt_embeds.float()).to(prompt_embeds),
+                    # encoder_hidden_states=torch.cat([image_embeddings, self.unet.embedding_projection(prompt_embeds.float()).to(prompt_embeds)], dim=0),
+                    # encoder_hidden_states=self.unet.embedding_projection(prompt_embeds.float()).to(prompt_embeds),
+                    encoder_hidden_states=image_embeddings,
                     added_time_ids=added_time_ids,
                     return_dict=False,
                 )[0]
@@ -646,7 +708,8 @@ class StableVideoDiffusionPipeline(DiffusionPipeline):
             if needs_upcasting:
                 self.vae.to(dtype=torch.float16)
             frames = self.decode_latents(latents, num_frames, decode_chunk_size)
-            frames = tensor2vid(frames, self.image_processor, output_type=output_type)
+            # frames = tensor2vid(frames, self.image_processor, output_type=output_type)
+            frames = self.video_processor.postprocess_video(video=frames, output_type=output_type)
         else:
             frames = latents
 

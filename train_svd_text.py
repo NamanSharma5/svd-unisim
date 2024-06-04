@@ -903,12 +903,13 @@ def main():
     text_encoder = CLIPTextModel.from_pretrained(
         'laion/CLIP-ViT-H-14-laion2B-s32B-b79K'
     )
-    feature_extractor = CLIPImageProcessor.from_pretrained(
-        'laion/CLIP-ViT-H-14-laion2B-s32B-b79K'
-    )
-    image_encoder = CLIPVisionModelWithProjection.from_pretrained(
-        'laion/CLIP-ViT-H-14-laion2B-s32B-b79K'
-    )
+    # feature_extractor = CLIPImageProcessor.from_pretrained(
+    #     'laion/CLIP-ViT-H-14-laion2B-s32B-b79K'
+    # )
+    # image_encoder = CLIPVisionModelWithProjection.from_pretrained(
+    #     'laion/CLIP-ViT-H-14-laion2B-s32B-b79K'
+    # )
+
     vae = AutoencoderKLTemporalDecoder.from_pretrained(
         args.pretrained_model_name_or_path, subfolder="vae", revision=args.revision, variant="fp16")
     unet = UNetSpatioTemporalConditionModel.from_pretrained(
@@ -1411,6 +1412,7 @@ def main():
                             tokenizer=tokenizer,
                             image_encoder=accelerator.unwrap_model(
                                 image_encoder),
+                            feature_extractor=feature_extractor,
                             vae=accelerator.unwrap_model(vae),
                             revision=args.revision,
                             torch_dtype=weight_dtype,
@@ -1432,12 +1434,13 @@ def main():
                                 num_frames = args.num_frames
                                 video_frames = pipeline(
                                     load_image('demo.jpeg').resize((args.width, args.height)),
-                                    prompt='',
+                                    prompt='person walking dog',
                                     height=args.height,
                                     width=args.width,
                                     num_frames=num_frames,
                                     decode_chunk_size=8,
-                                    motion_bucket_id=0,
+                                    # motion_bucket_id=0,
+                                    motion_bucket_id=127,
                                     fps=7.0,
                                     noise_aug_strength=0.02,
                                     # generator=generator,
