@@ -15,7 +15,6 @@
 # limitations under the License.
 
 """Script to fine-tune Stable Video Diffusion."""
-print("pre-import")
 import argparse
 import random
 import logging
@@ -43,7 +42,7 @@ from accelerate.utils import ProjectConfiguration, set_seed
 from huggingface_hub import create_repo, upload_folder
 from packaging import version
 from tqdm.auto import tqdm
-from transformers import CLIPImageProcessor, CLIPVisionModelWithProjection
+from transformers import CLIPImageProcessor, CLIPVisionModelWithProjection, CLIPTokenizer, CLIPTextModel
 from einops import rearrange
 import diffusers
 from diffusers import StableVideoDiffusionPipeline
@@ -925,6 +924,14 @@ def main():
     image_encoder = CLIPVisionModelWithProjection.from_pretrained(
         args.pretrained_model_name_or_path, subfolder="image_encoder", revision=args.revision, variant="fp16"
     )
+
+    text_tokenzier = CLIPTokenizer.from_pretrained("stabilityai/stable-diffusion-2-1",subfolder="tokenizer")
+    #  text = "A beautiful sunset over the ocean."
+    # input_ids = text_tokenzier(text, return_tensors="pt")["input_ids"]
+    text_encoder = CLIPTextModel.from_pretrained("stabilityai/stable-diffusion-2-1",subfolder="text_encoder")
+    # embeddings = text_encoder(input_ids)[0]
+
+
     vae = AutoencoderKLTemporalDecoder.from_pretrained(
         args.pretrained_model_name_or_path, subfolder="vae", revision=args.revision, variant="fp16")
     unet = UNetSpatioTemporalConditionModel.from_pretrained(
@@ -1483,9 +1490,9 @@ def main():
     accelerator.end_training()
 
 
+ 
 if __name__ == "__main__":
     main()
-
     # print('test EpicKitchensDataset')
     # epicKichensDataset = EpicKitchensDataset()
 
