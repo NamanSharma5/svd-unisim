@@ -337,9 +337,6 @@ class EpicKitchensDataLoader:
         return self.output_directory / "EPIC-KITCHENS" / participant_id / "rgb_frames" / video_id / frame_str
     
     
-
-
-
 class EpicKitchensDataset(Dataset):
     def __init__(self,output_directory="data_pipeline/data", participant_numbers=[2,7], frames=20, channels=3, height=256, width=256, no_of_conditioning_frames = NO_OF_CONDITIONING_FRAMES):
         self.participant_numbers = participant_numbers
@@ -379,8 +376,10 @@ class EpicKitchensDataset(Dataset):
         # Initialize a tensor to store the pixel values
         if NO_OF_CONDITIONING_FRAMES > 1:
             pixel_values = torch.empty((self.sample_frames+NO_OF_CONDITIONING_FRAMES-1, self.channels, self.height, self.width))
+            condition = torch.empty((self.sample_frames+NO_OF_CONDITIONING_FRAMES-1, self.channels, self.height, self.width))
         else:
             pixel_values = torch.empty((self.sample_frames, self.channels, self.height, self.width))
+            condition = torch.empty((self.sample_frames, self.channels, self.height, self.width))
 
         # Load and process each frame
         for i, frame_path in enumerate(sample['frames']):
@@ -401,9 +400,9 @@ class EpicKitchensDataset(Dataset):
                         dim=2, keepdim=True)  # For grayscale images
 
                 pixel_values[i] = img_normalized
-        # TODO return "text_prompt" too
-        return {'pixel_values': pixel_values}
+                condition[i] = (img_normalized + torch.randn_like(img_normalized) * 0.02)
 
+        return {'pixel_values' : pixel_values, 'text_prompt' : sample['narration'], 'condition' : condition}
         
 # resizing utils
 # TODO: clean up later
@@ -568,7 +567,7 @@ def parse_args():
     parser.add_argument(
         "--inference_only",
         type=bool,
-        default=True
+        default=False
     )
     parser.add_argument(
         "--pretrained_model_name_or_path",
@@ -933,7 +932,7 @@ def main():
         args.pretrained_model_name_or_path, subfolder="image_encoder", revision=args.revision, variant="fp16"
     )
 
-    text_tokenzier = CLIPTokenizer.from_pretrained("stabilityai/stable-diffusion-2-1",subfolder="tokenizer")
+    text_tokenizer = CLIPTokenizer.from_pretrained("stabilityai/stable-diffusion-2-1",subfolder="tokenizer")
     #  text = "A beautiful sunset over the ocean."
     # input_ids = text_tokenzier(text, return_tensors="pt")["input_ids"]
     text_encoder = CLIPTextModel.from_pretrained("stabilityai/stable-diffusion-2-1",subfolder="text_encoder")
@@ -1132,8 +1131,8 @@ def main():
     )
 
     def tokenize_captions(captions):
-        inputs = tokenizer(
-            captions, max_length=tokenizer.model_max_length, padding="max_length", truncation=True, return_tensors="pt"
+        inputs = text_tokenizer(
+            captions, max_length=text_tokenizer.model_max_length, padding="max_length", truncation=True, return_tensors="pt"
         )
         return inputs.input_ids
 
@@ -1297,7 +1296,7 @@ def main():
 
                 # Get the text embedding for conditioning.
                 img_encoder_hidden_states = encode_image(
-                    pixel_values[:, 0, :, :, :].float())
+                    pixel_values[:, 0:NO_OF_CONDITIONING_FRAMES, :, :, :].float())
                 txt_encoder_hidden_states = text_encoder(tokenize_captions(batch["text_prompt"]).to(accelerator.device)).pooler_output.unsqueeze(1)
 
                 # Here I input a fixed numerical value for 'motion_bucket_id', which is not reasonable.
@@ -1364,7 +1363,7 @@ def main():
 
                 # check https://arxiv.org/abs/2206.00364(the EDM-framework) for more details.
                 target = latents
-                txt_encoder_hidden_states = unet.embedding_projection(encoder_hidden_states.float()).to(encoder_hidden_states)
+                txt_encoder_hidden_states = unet.embedding_projection(txt_encoder_hidden_states.float()).to(txt_encoder_hidden_states)
                 model_pred = unet(
                     inp_noisy_latents, timesteps, img_encoder_hidden_states, added_time_ids=added_time_ids).sample
 
@@ -1382,18 +1381,17 @@ def main():
                 )
                 loss = loss.mean()
 
-                    # Gather the losses across all processes for logging (if we use distributed training).
-                    avg_loss = accelerator.gather(
-                        loss.repeat(args.per_gpu_batch_size)).mean()
-                    train_loss += avg_loss.item() / args.gradient_accumulation_steps
-
-                    # Backpropagate
-                    accelerator.backward(loss)
-                    # if accelerator.sync_gradients:
-                    #     accelerator.clip_grad_norm_(unet.parameters(), args.max_grad_norm)
-                    optimizer.step()
-                    lr_scheduler.step()
-                    optimizer.zero_grad()
+                # Gather the losses across all processes for logging (if we use distributed training).
+                avg_loss = accelerator.gather(
+                    loss.repeat(args.per_gpu_batch_size)).mean()
+                train_loss += avg_loss.item() / args.gradient_accumulation_steps
+                # Backpropagate
+                accelerator.backward(loss)
+                # if accelerator.sync_gradients:
+                #     accelerator.clip_grad_norm_(unet.parameters(), args.max_grad_norm)
+                optimizer.step()
+                lr_scheduler.step()
+                optimizer.zero_grad()
 
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:
@@ -1457,7 +1455,7 @@ def main():
                                 image_encoder),
                             vae=accelerator.unwrap_model(vae),
                             text_encoder=accelerator.unwrap_model(text_encoder),    
-                            tokenizer = accelerator.unwrap_model(text_tokenzier),                            
+                            tokenizer = accelerator.unwrap_model(text_tokenizer),                            
                             revision=args.revision,
                             torch_dtype=weight_dtype,
                         )
@@ -1526,7 +1524,7 @@ def main():
             vae=accelerator.unwrap_model(vae),
             unet=unet,
             text_encoder=accelerator.unwrap_model(text_encoder),    
-            tokenizer = accelerator.unwrap_model(text_tokenzier),  
+            tokenizer = accelerator.unwrap_model(text_tokenizer),  
             revision=args.revision,
         )
         pipeline.save_pretrained(args.output_dir)
