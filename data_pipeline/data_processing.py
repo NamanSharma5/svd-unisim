@@ -61,15 +61,15 @@ class EpicKitchensDataLoader:
             if not participant_folder.exists():                # check if video_id is provided if so download only that video, else download all videos
                 self.download_data(participant)
 
-            elif self.video_id:
-                # check if video_id is provided if so download only that video, else download all videos
-                # video id should be 2 digits so add a leading 0 if it is a single digit
-                if self.video_id < 10:
-                    video_id_formatted = f"0{self.video_id}"
-                else:
-                    video_id_formatted = self.video_id
-                if not (participant_folder/ "rgb_frames" / f"P{participant}_{video_id_formatted}").exists():
-                    self.download_data(participant)
+            # elif self.video_id:
+            #     # check if video_id is provided if so download only that video, else download all videos
+            #     # video id should be 2 digits so add a leading 0 if it is a single digit
+            #     if self.video_id < 10:
+            #         video_id_formatted = f"0{self.video_id}"
+            #     else:
+            #         video_id_formatted = self.video_id
+            #     if not (participant_folder/ "rgb_frames" / f"P{participant}_{video_id_formatted}").exists():
+            #         self.download_data(participant)
 
             print(f"Participant {participant} complete")
     
@@ -80,16 +80,18 @@ class EpicKitchensDataLoader:
         # python epic_downloader.py --rgb-frames --extension-only --participants {participant} --output_path {self.output_directory}
         if participant < 10:
             participant_formatted = f"0{participant}"
-
-        if self.video_id:
-            # construct the video id from the participant number and video id, noting for both single digit numbers we need to add a leading 0
-            if self.video_id < 10:
-                self.video_id = f"0{self.video_id}"
-            video_id = f"P{participant_formatted}_{self.video_id}"
-            command = f"python epic_downloader.py --rgb-frames --extension-only --participants P{participant} --specific-videos {video_id} --output_path {self.output_directory} --train"
-
         else:
-            command = f"python epic_downloader.py --rgb-frames --extension-only --participants P{participant} --output_path {self.output_directory} --train"
+            participant_formatted = participant
+
+        # if self.video_id:
+        #     # construct the video id from the participant number and video id, noting for both single digit numbers we need to add a leading 0
+        #     if self.video_id < 10:
+        #         self.video_id = f"0{self.video_id}"
+        #     video_id = f"P{participant_formatted}_{self.video_id}"
+        #     command = f"python epic_downloader.py --rgb-frames --extension-only --participants P{participant} --specific-videos {video_id} --output_path {self.output_directory} --train"
+
+        # else:
+        command = f"python epic_downloader.py --rgb-frames --participants P{participant_formatted} --output_path {self.output_directory} --train"
 
         # RUN THE COMMAND
         print(f"Downloading data for participant {participant} {self.video_id if self.video_id else ''}")
