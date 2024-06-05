@@ -241,16 +241,18 @@ class EpicKitchensDataLoader:
 
         ### have to run the following python command to download the data
         # python epic_downloader.py --rgb-frames --extension-only --participants {participant} --output_path {self.output_directory}
+        if participant < 10:
+            participant_formatted = f"0{participant}"
+
         if self.video_id:
             # construct the video id from the participant number and video id, noting for both single digit numbers we need to add a leading 0
-            if participant < 10:
-                participant_formatted = f"0{participant}"
             if self.video_id < 10:
                 self.video_id = f"0{self.video_id}"
             video_id = f"P{participant_formatted}_{self.video_id}"
-            command = f"python epic_downloader.py --rgb-frames --extension-only --participants {participant} --specific-videos {video_id} --output_path {self.output_directory} --train"
+            command = f"python epic_downloader.py --rgb-frames --extension-only --participants P{participant} --specific-videos {video_id} --output_path {self.output_directory} --train"
+
         else:
-            command = f"python epic_downloader.py --rgb-frames --extension-only --participants {participant} --output_path {self.output_directory} --train"
+            command = f"python epic_downloader.py --rgb-frames --extension-only --participants P{participant} --output_path {self.output_directory} --train"
 
         # RUN THE COMMAND
         print(f"Downloading data for participant {participant} {self.video_id if self.video_id else ''}")
