@@ -328,7 +328,6 @@ class StableVideoDiffusionPipeline(DiffusionPipeline):
 
             negative_prompt_embeds = negative_prompt_embeds.repeat(1, num_images_per_prompt, 1)
             negative_prompt_embeds = negative_prompt_embeds.view(batch_size * num_images_per_prompt, seq_len, -1)
-        print(prompt_embeds.shape, negative_prompt_embeds.shape)
         return prompt_embeds, negative_prompt_embeds
 
     def _encode_image(
@@ -738,7 +737,7 @@ class StableVideoDiffusionPipeline(DiffusionPipeline):
 
                 # Concatenate image_latents over channels dimension
                 latent_model_input = torch.cat([latent_model_input, image_latents], dim=2)
-                prompt_embeds = self.unet.embedding_projection(prompt_embeds.float()).to(prompt_embeds),
+                prompt_embeds = self.unet.embedding_projection(prompt_embeds.float()).to(prompt_embeds)
                 # predict the noise residual
                 noise_pred = self.unet(
                     latent_model_input,

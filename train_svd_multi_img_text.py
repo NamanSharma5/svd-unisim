@@ -21,6 +21,7 @@ import logging
 import math
 import os
 os.environ["HF_HOME"] = "/home/kk2720/svd-unisim/.cache"
+# os.environ["HF_HOME"] = "/vol/biomedic3/bglocker/ugproj2324/nns20/svd-unisim/.cache"
 import csv
 import cv2
 import shutil
@@ -564,6 +565,12 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description="Script to train Stable Diffusion XL for InstructPix2Pix."
     )
+
+    parser.add_argument(
+        "--multi-gpu",
+        type=bool,
+        default=False,
+    )
     parser.add_argument(
         "--inference_only",
         type=bool,
@@ -931,7 +938,7 @@ def main():
     image_encoder = CLIPVisionModelWithProjection.from_pretrained(
         args.pretrained_model_name_or_path, subfolder="image_encoder", revision=args.revision, variant="fp16"
     )
-
+    #### NOTE WE DO NOT TRAIN THE TEXT ENCODER OR TOKENIZER, JUST THE EMBEDDING PROJECTION (so it does not matter if we store the tokenizer or text encoder weights in the img2video folder instead of the stable diffusion folder)
     text_tokenizer = CLIPTokenizer.from_pretrained("stabilityai/stable-diffusion-2-1",subfolder="tokenizer")
     #  text = "A beautiful sunset over the ocean."
     # input_ids = text_tokenzier(text, return_tensors="pt")["input_ids"]
@@ -1200,10 +1207,15 @@ def main():
     ):
         add_time_ids = [fps, motion_bucket_id, noise_aug_strength]
 
-        # ONLY ON SINGLE GPU REMOVE unet.module
-        passed_add_embed_dim = unet.module.config.addition_time_embed_dim * \
-            len(add_time_ids)
-        expected_add_embed_dim = unet.module.add_embedding.linear_1.in_features
+        if args.multi_gpu:
+            passed_add_embed_dim = unet.module.config.addition_time_embed_dim * \
+                len(add_time_ids)
+            expected_add_embed_dim = unet.module.add_embedding.linear_1.in_features
+        else:
+            # ONLY ON SINGLE GPU REMOVE unet.module
+            passed_add_embed_dim = unet.config.addition_time_embed_dim * \
+                len(add_time_ids)
+            expected_add_embed_dim = unet.add_embedding.linear_1.in_features
 
         if expected_add_embed_dim != passed_add_embed_dim:
             raise ValueError(
@@ -1244,7 +1256,6 @@ def main():
     progress_bar = tqdm(range(global_step, args.max_train_steps),
                         disable=not accelerator.is_local_main_process)
     progress_bar.set_description("Steps")
-
     for epoch in range(first_epoch, args.num_train_epochs):
         unet.train()
         train_loss = 0.0
@@ -1368,7 +1379,10 @@ def main():
 
                 # check https://arxiv.org/abs/2206.00364(the EDM-framework) for more details.
                 target = latents
-                txt_encoder_hidden_states = unet.module.embedding_projection(txt_encoder_hidden_states.float()).to(txt_encoder_hidden_states)
+                if args.multi_gpu:
+                    txt_encoder_hidden_states = unet.module.embedding_projection(txt_encoder_hidden_states.float()).to(txt_encoder_hidden_states)
+                else:
+                    txt_encoder_hidden_states = unet.embedding_projection(txt_encoder_hidden_states.float()).to(txt_encoder_hidden_states)
                 model_pred = unet(
                     inp_noisy_latents, timesteps, torch.cat([img_encoder_hidden_states,txt_encoder_hidden_states],dim=1), added_time_ids=added_time_ids).sample
 
@@ -1485,26 +1499,26 @@ def main():
                 
                             for val_img_idx in range(args.num_validation_images):
                                 num_frames = args.num_frames
-                                for i in range(0,5):
+                                for image_idx in range(0,5):
                                     prompts = ["do nothing"]
-                                    if i == 0:
+                                    if image_idx == 0:
                                         prompts = prompts_0
                                     
-                                    if i == 1:
+                                    if image_idx == 1:
                                         prompts = prompts_1
 
-                                    if i == 2:
+                                    if image_idx == 2:
                                         prompts = prompts_2
 
-                                    if i == 3:
+                                    if image_idx == 3:
                                         prompts = prompts_3
                                         
-                                    if i == 4:
+                                    if image_idx == 4:
                                         prompts = prompts_4
-
+                                    
                                     for prompt in prompts:
                                         video_frames = pipeline(
-                                            load_image(f'demo_{i}.jpg').resize((args.width, args.height)),
+                                            load_image(f'demo_{image_idx}.jpg').resize((args.width, args.height)),
                                             prompt=prompt,
                                             height=args.height,
                                             width=args.width,
@@ -1518,7 +1532,7 @@ def main():
 
                                         out_file = os.path.join(
                                             val_save_dir,
-                                            f"step_{global_step}_val_img_demo{i}_{prompt}.mp4",
+                                            f"step_{global_step}_val_img_demo{image_idx}_{prompt}.mp4",
                                         )
 
                                         for i in range(num_frames):
@@ -1578,8 +1592,8 @@ if __name__ == "__main__":
     # text_encoder = CLIPTextModel.from_pretrained("stabilityai/stable-diffusion-2-1",subfolder="text_encoder")
 
     # text = "A beautiful sunset over the ocean."
-    # # input_ids = text_tokenzier(text, return_tensors="pt")["input_ids"]
-    # # print(input_ids)
+    # input_ids = text_tokenzier(text, return_tensors="pt")["input_ids"]
+    # print(input_ids)
     # text_inputs = text_tokenzier(
     #     text,
     #     padding="max_length",
@@ -1587,6 +1601,8 @@ if __name__ == "__main__":
     #     truncation=True,
     #     return_tensors="pt",
     # )
+    # text_encoder_outputs = text_encoder(**text_inputs)
+    # print(text_encoder_outputs)
     # print(f"{text_tokenzier.model_max_length=}")
 
 
