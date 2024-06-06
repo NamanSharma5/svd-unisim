@@ -1,10 +1,11 @@
-FROM nvidia/cuda:12.2.0-devel-ubuntu20.04
+# FROM nvidia/cuda:12.2.0-devel-ubuntu20.04
+FROM nvidia/cuda:12.2.0-devel-ubuntu22.04
 # Set environment variables
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Install required packages (do i need libgl1-mesa-glx and libglib2.0-0?)
 RUN apt-get update && apt-get install -y \
-    python3 \
+    python3.10 \
     python3-pip \
     git \
     wget \
@@ -35,4 +36,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Set the entrypoint
 
-ENTRYPOINT ["python", "train_svd_multi_img_text.py"] 
+# ENTRYPOINT ["python", "train_svd_multi_img_text.py"] 
