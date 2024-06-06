@@ -28,8 +28,8 @@ RUN git clone https://github_pat_11ALBWP4I0cJL2Sooadcnk_KdjamsjHdijkD7jXKnYjBU1v
 # Set the working directory to the repository
 WORKDIR /workspace/repo
 
-# Copy the data_pipeline folder
-COPY data_pipeline /workspace/repo/data_pipeline/
+# Remove the data_pipeline folder if it exists (since we are mounting this folder instead)
+RUN rm -rf /workspace/repo/data_pipeline
 
 # Copy the requirements file into the image
 COPY requirements.txt /workspace/repo/requirements.txt
@@ -40,3 +40,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Set the entrypoint
 
 # ENTRYPOINT ["python", "train_svd_multi_img_text.py"] 
+
+
+# RUN docker container with this command;
+# docker run -it --rm --mount type=bind,source=/path/to/local/data_pipeline,target=/workspace/repo/data_pipeline --mount type=bind,source=/path/to/local/outputs,target=/workspace/repo/outputs your_docker_image_name
+# docker run -it --rm \
+#     --mount type=bind,source=/path/to/local/data_pipeline,target=/workspace/repo/data_pipeline \
+#     --mount type=bind,source=/path/to/local/outputs,target=/workspace/repo/outputs \
+#     your_docker_image_name
