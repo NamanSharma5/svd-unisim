@@ -101,8 +101,8 @@ class EpicKitchensDataLoader:
 
     def untar_data(self,participants):
 
-        if type(participant) != list:
-            participants = [participant]
+        if type(participants) != list:
+            participants = [participants]
         
         for participant in participants:
 
@@ -223,10 +223,10 @@ if __name__ == "__main__":
     # epicKitchenDataLoader = EpicKitchensDataLoader(output_directory="data",frames=20,participant_numbers=[2], video_id=101)
     # epicKitchenDataLoader = EpicKitchensDataLoader(output_directory="data",frames=20,participant_numbers=[16,17,14,19,21,15,13,9,31,5,37])
     # epicKitchenDataLoader = EpicKitchensDataLoader(output_directory="data",frames=20,participant_numbers=[2])
-    pariticipants = [11]
+    pariticipants = [1, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 35, 37]
     epicKitchenDataLoader = EpicKitchensDataLoader(output_directory="data",frames=20,participant_numbers=pariticipants,batch_size=1)
     epicKitchenDataLoader.check_data_exists_and_download_if_not()
-    # epicKitchenDataLoader.untar_data(pariticipants)
+    epicKitchenDataLoader.untar_data(pariticipants)
     # epicKitchenDataLoader.load_csv_data("EPIC_100_train.csv")
     # dataloader = epicKitchenDataLoader.get_dataloader()
 
