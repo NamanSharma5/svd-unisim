@@ -192,6 +192,7 @@ class DummyDataset(Dataset):
 
 
 ALL_PARTICIPANT_NUMBERS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 35, 37]
+PARTICIPANT_NUMBERS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 19, 20, 21, 22, 23, 24, 25, 26, 27]
 SLIPPAGE_FRAMES = 3
 
 class EpicKitchensDataLoader:
@@ -325,7 +326,7 @@ class EpicKitchensDataLoader:
     
     
 class EpicKitchensDataset(Dataset):
-    def __init__(self,output_directory="data_pipeline/data", participant_numbers=[2,7], frames=20, channels=3, height=256, width=256, no_of_conditioning_frames = NO_OF_CONDITIONING_FRAMES):
+    def __init__(self,output_directory="data_pipeline/data", participant_numbers=PARTICIPANT_NUMBERS, frames=20, channels=3, height=256, width=256, no_of_conditioning_frames = NO_OF_CONDITIONING_FRAMES):
         self.participant_numbers = participant_numbers
         self.sample_frames = frames
         self.channels = channels
@@ -1057,7 +1058,8 @@ def main():
     # Customize the parameters that need to be trained; if necessary, you can uncomment them yourself.
 
     for name, para in unet.named_parameters():
-        if 'temporal_transformer_block' in name or 'embedding_projection' in name:
+        # if 'temporal_transformer_block' in name or 'embedding_projection' in name:
+        if 'temporal_transformer_block' in name or 'embedding_projection' in name or 'transformer_block' in name or 'temporal_res_block' in name or 'spatial_res_block' in name:
             parameters_list.append(para)
             para.requires_grad = True
         else:
