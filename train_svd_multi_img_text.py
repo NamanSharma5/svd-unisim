@@ -609,7 +609,7 @@ def parse_args():
         "--validation_steps",
         type=int,
         # default=500,
-        default=500,
+        default=2000,
         help=(
             "Run fine-tuning validation every X epochs. The validation process consists of running the text/image prompt"
             " multiple times: `args.num_validation_images`."
@@ -1479,11 +1479,11 @@ def main():
                         with torch.autocast(
                             str(accelerator.device).replace(":0", ""), enabled=accelerator.mixed_precision == "fp16"
                         ):
-                            prompts_0 = ["open oven", "close oven", "grab oven rack"]
-                            prompts_1 = ["grab coffee", "grab coffee pod", "grab bottle"]
+                            prompts_0 = ["open oven", "close oven"]
+                            prompts_1 = ["grab sponge ", "turn off tap"]
                             prompts_2 = ["grab cheese", "grab knife"]
-                            prompts_3 = ["grab milk", "close fridge","grab cheese"]
-                            prompts_4 = ["grab butter"]
+                            prompts_3 = ["grab knife", "grab meat","grab banana"]
+                            prompts_4 = ["grab pan", "grab oil"]
                 
                             for val_img_idx in range(args.num_validation_images):
                                 num_frames = args.num_frames
