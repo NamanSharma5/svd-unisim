@@ -40,7 +40,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Set the entrypoint
 
 # ENTRYPOINT ["python", "train_svd_multi_img_text.py"] 
+# for multinode training: --config_file {path/to/config/my_config_file.yaml}
 
+# Kobi run command
+# docker run -it --rm --mount type=bind,source=/home/kk2720/svd-unisim/data_pipeline,target=/workspace/repo/data_pipeline --mount type=bind,source=/home/kk2720/svd-unisim/outputs2,target=/workspace/repo/outputs dp1
 
 # RUN docker container with this command;
 # docker run -it --rm --mount type=bind,source=/path/to/local/data_pipeline,target=/workspace/repo/data_pipeline --mount type=bind,source=/path/to/local/outputs,target=/workspace/repo/outputs your_docker_image_name
