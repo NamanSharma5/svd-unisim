@@ -20,7 +20,7 @@ import random
 import logging
 import math
 import os
-os.environ["HF_HOME"] = "/home/kk2720/svd-unisim/.cache"
+# os.environ["HF_HOME"] = "/home/kk2720/svd-unisim/.cache"
 # os.environ["HF_HOME"] = "/vol/biomedic3/bglocker/ugproj2324/nns20/svd-unisim/.cache"
 import csv
 import cv2
@@ -1480,10 +1480,10 @@ def main():
                             str(accelerator.device).replace(":0", ""), enabled=accelerator.mixed_precision == "fp16"
                         ):
                             prompts_0 = ["open oven", "close oven"]
-                            prompts_1 = ["grab sponge ", "turn off tap"]
+                            prompts_1 = ["grab tongs ", "grab sponge","grab container"]
                             prompts_2 = ["grab cheese", "grab knife"]
-                            prompts_3 = ["grab knife", "grab meat","grab banana"]
-                            prompts_4 = ["grab pan", "grab oil"]
+                            prompts_3 = ["grab knife", "open tap","grab sponge"]
+                            prompts_4 = ["switch on hob", "pick up plate"]
                 
                             for val_img_idx in range(args.num_validation_images):
                                 num_frames = args.num_frames
