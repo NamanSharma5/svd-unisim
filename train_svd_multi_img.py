@@ -1424,7 +1424,7 @@ def main():
                         ):
                             for val_img_idx in range(args.num_validation_images):
                                 num_frames = args.num_frames
-                                for i in range(1,6):
+                                for i in range(0,6):
                                     video_frames = pipeline(
                                         load_image(f'demo_{i}.jpg').resize((args.width, args.height)),
                                         height=args.height,

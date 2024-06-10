@@ -1484,10 +1484,11 @@ def main():
                             prompts_2 = ["grab cheese", "grab knife"]
                             prompts_3 = ["grab knife", "open tap","grab sponge"]
                             prompts_4 = ["switch on hob", "pick up plate"]
+                            prompts_5 = ["grab tongs", "grab towel"]
                 
                             for val_img_idx in range(args.num_validation_images):
                                 num_frames = args.num_frames
-                                for image_idx in range(0,5):
+                                for image_idx in range(0,6):
                                     prompts = ["do nothing"]
                                     if image_idx == 0:
                                         prompts = prompts_0
@@ -1503,6 +1504,9 @@ def main():
                                         
                                     if image_idx == 4:
                                         prompts = prompts_4
+
+                                    if image_idx == 5:
+                                        prompts = prompts_5
                                     
                                     for prompt in prompts:
                                         video_frames = pipeline(
