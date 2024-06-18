@@ -31,7 +31,7 @@ import tarfile
 import accelerate
 import numpy as np
 import PIL
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw    
 import torch
 import torch.nn.functional as F
 import torch.utils.checkpoint
@@ -118,7 +118,6 @@ def rand_log_normal(shape, loc=0., scale=1., device='cpu', dtype=torch.float32):
 # noise_d_high = 64
 # sigma_data = 0.5
 
-
 class DummyDataset(Dataset):
     def __init__(self, num_samples=100000, width=1024, height=576, sample_frames=25):
         """
@@ -154,7 +153,6 @@ class DummyDataset(Dataset):
         frames = os.listdir(folder_path)
         # Sort the frames by name
         frames.sort()
-
         # Ensure the selected folder has at least `sample_frames`` frames
         if len(frames) < self.sample_frames:
             raise ValueError(
@@ -189,16 +187,13 @@ class DummyDataset(Dataset):
                 pixel_values[i] = img_normalized
         return {'pixel_values': pixel_values}
     
-
-
 ALL_PARTICIPANT_NUMBERS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 35, 37]
 PARTICIPANT_NUMBERS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 19, 20, 21, 22, 23, 24, 25, 26, 27]
 SLIPPAGE_FRAMES = 3
 
 class EpicKitchensDataLoader:
 
-
-    def __init__(self, output_directory, frames, participant_numbers = None, video_id = None, batch_size=1):
+    def __init__(self, output_directory, frames, participant_numbers = None, video_id = None, batch_size=1,validation=False):
         
         if participant_numbers is None:
             participant_numbers = ALL_PARTICIPANT_NUMBERS
@@ -210,9 +205,10 @@ class EpicKitchensDataLoader:
         self.output_directory = self.cwd / output_directory
         self.batch_size = batch_size # NOT USED
         self.dataset = []
+        self.validation = validation    
 
     
-    def check_data_exists_and_download_if_not(self):
+    def check_data_exists_and_download_if_not(self,validation=False):
         for participant in self.participant_numbers:
             # numher should be 2 digits so add a leading 0 if it is a single digit
             if participant < 10:
@@ -221,13 +217,12 @@ class EpicKitchensDataLoader:
                 participant_formatted = participant
             participant_folder = self.output_directory/ "EPIC-KITCHENS" / f"P{participant_formatted}"
 
-            if not participant_folder.exists():                # check if video_id is provided if so download only that video, else download all videos
+            if not participant_folder.exists() or validation:                # check if video_id is provided if so download only that video, else download all videos
                 self.download_data(participant)
 
             print(f"Participant {participant} complete")
 
     
-
     def download_data(self,participant):
 
         ### have to run the following python command to download the data
@@ -238,12 +233,13 @@ class EpicKitchensDataLoader:
             participant_formatted = participant
 
         command = f"python epic_downloader.py --rgb-frames --participants P{participant_formatted} --output_path {self.output_directory} --train"
-
+        
+        if self.validation:
+            command = f"python epic_downloader.py --rgb-frames --participants P{participant_formatted} --output_path {self.output_directory} --val"  
         # RUN THE COMMAND
         print(f"Downloading data for participant {participant} {self.video_id if self.video_id else ''}")
         print(command)
         os.system(command)
-
 
 
     def untar_data(self,participants):
@@ -391,7 +387,29 @@ class EpicKitchensDataset(Dataset):
                 condition[i] = (img_normalized + torch.randn_like(img_normalized) * 0.02)
 
         return {'pixel_values' : pixel_values, 'text_prompt' : sample['narration'], 'condition' : condition}
-        
+
+
+class EpicKitchensValidationDataset(Dataset):
+
+    def __init__(self,output_directory="data_pipeline/data", participant_numbers=[2], frames=20, channels=3, height=256, width=256, no_of_conditioning_frames = NO_OF_CONDITIONING_FRAMES):
+        self.participant_numbers = participant_numbers
+        self.sample_frames = frames
+        self.channels = channels
+        self.height = height
+        self.width = width
+        if no_of_conditioning_frames > 1:
+            self.epicKitchensDataLoader = EpicKitchensDataLoader(output_directory=output_directory,participant_numbers=participant_numbers, frames=frames+no_of_conditioning_frames - 1,validation=True)
+        else:
+            self.epicKitchensDataLoader = EpicKitchensDataLoader(output_directory=output_directory,participant_numbers=participant_numbers, frames=frames,validation=True)
+    
+        self.cwd = Path.cwd() # this is already handled by epicKitchensDataLoader too
+        self.output_directory = self.cwd / output_directory
+        self.epicKitchensDataLoader.check_data_exists_and_download_if_not(validation=True)
+        self.epicKitchensDataLoader.untar_data(participant_numbers)
+        self.epicKitchensDataLoader.load_csv_data('data_pipeline/EPIC_100_validation.csv')
+
+
+
 # resizing utils
 # TODO: clean up later
 def _resize_with_antialiasing(input, size, interpolation="bicubic", align_corners=True):
@@ -887,6 +905,7 @@ def main():
             raise ImportError(
                 "Make sure to install wandb if you want to use it for logging during training.")
         import wandb
+        wandb.init(project="svd-unisim-epic-kitchens")
 
     # Make one log on every process with the configuration for debugging.
     logging.basicConfig(
@@ -932,7 +951,6 @@ def main():
     text_encoder = CLIPTextModel.from_pretrained("stabilityai/stable-diffusion-2-1",subfolder="text_encoder")
     # embeddings = text_encoder(input_ids)[0]
 
-
     vae = AutoencoderKLTemporalDecoder.from_pretrained(
         args.pretrained_model_name_or_path, subfolder="vae", revision=args.revision, variant="fp16")
     unet = UNetSpatioTemporalConditionModel.from_pretrained(
@@ -941,10 +959,7 @@ def main():
         low_cpu_mem_usage=True,
         variant="fp16",
     )
-    
-
     """""""""""""" 
-
     unet.embedding_projection = EmbeddingProjection(
             in_features=1024, hidden_size=1024,
     )
@@ -953,7 +968,6 @@ def main():
     vae.requires_grad_(False)
     image_encoder.requires_grad_(False)
     unet.requires_grad_(False)
-
 
 
     # For mixed precision training we cast the text_encoder and vae weights to half-precision
@@ -1058,27 +1072,20 @@ def main():
     # Customize the parameters that need to be trained; if necessary, you can uncomment them yourself.
 
     for name, para in unet.named_parameters():
-        # if 'temporal_transformer_block' in name or 'embedding_projection' in name:
-        if 'temporal_transformer_block' in name or 'embedding_projection' in name or 'transformer_block' in name or 'temporal_res_block' in name or 'spatial_res_block' in name:
+        if 'temporal_transformer_block' in name or 'embedding_projection' in name:
+        # if 'temporal_transformer_block' in name or 'embedding_projection' in name or 'transformer_block' in name or 'temporal_res_block' in name or 'spatial_res_block' in name:
             parameters_list.append(para)
             para.requires_grad = True
         else:
             para.requires_grad = False
+
     optimizer = optimizer_cls(
-        parameters_list,
+        parameters_list, # unet.parameters() to train the whole unet
         lr=args.learning_rate,
         betas=(args.adam_beta1, args.adam_beta2),
         weight_decay=args.adam_weight_decay,
         eps=args.adam_epsilon,
     )
-
-    # optimizer = optimizer_cls(
-    #     unet.parameters(),
-    #     lr=args.learning_rate,
-    #     betas=(args.adam_beta1, args.adam_beta2),
-    #     weight_decay=args.adam_weight_decay,
-    #     eps=args.adam_epsilon,
-    # )
 
     # check parameters
     if accelerator.is_main_process:
@@ -1259,11 +1266,9 @@ def main():
                 pixel_values = batch["pixel_values"].to(weight_dtype).to(
                     accelerator.device, non_blocking=True
                 )
-                # print(f'pixel_values before: {pixel_values.shape}')
                 # test_tensor = torch.ones((pixel_values.shape[0],1,pixel_values.shape[2],pixel_values.shape[3],pixel_values.shape[4])).to(
                 #     accelerator.device, non_blocking=True)
                 # pixel_values = torch.cat((pixel_values, test_tensor),dim=1)
-                # print(f'pixel_values after: {pixel_values.shape}')
                 # conditional_pixel_values = pixel_values[:, 0:1, :, :, :]
                 conditional_pixel_values = pixel_values[:, 0:NO_OF_CONDITIONING_FRAMES, :, :, :]
 
@@ -1407,6 +1412,8 @@ def main():
                 progress_bar.update(1)
                 global_step += 1
                 accelerator.log({"train_loss": train_loss}, step=global_step)
+                if args.report_to == "wandb":
+                    wandb.log({"train_loss": train_loss}, step=global_step)
                 train_loss = 0.0
 
                 if accelerator.is_main_process:
@@ -1487,7 +1494,8 @@ def main():
                 
                             for val_img_idx in range(args.num_validation_images):
                                 num_frames = args.num_frames
-                                for image_idx in range(0,5):
+                                for image_idx in range(0,5): #TODO: uncomment this for full training run
+                                # for image_idx in range(0,1):
                                     prompts = ["do nothing"]
                                     if image_idx == 0:
                                         prompts = prompts_0
@@ -1572,60 +1580,5 @@ def main():
 
  
 if __name__ == "__main__":
+    # validation_dataset = EpicKitchensValidationDataset()
     main()
-
-
-    # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    # text_tokenzier = CLIPTokenizer.from_pretrained("stabilityai/stable-diffusion-2-1",subfolder="tokenizer")
-    # text_encoder = CLIPTextModel.from_pretrained("stabilityai/stable-diffusion-2-1",subfolder="text_encoder")
-
-    # text = "A beautiful sunset over the ocean."
-    # input_ids = text_tokenzier(text, return_tensors="pt")["input_ids"]
-    # print(input_ids)
-    # text_inputs = text_tokenzier(
-    #     text,
-    #     padding="max_length",
-    #     max_length=text_tokenzier.model_max_length,
-    #     truncation=True,
-    #     return_tensors="pt",
-    # )
-    # text_encoder_outputs = text_encoder(**text_inputs)
-    # print(text_encoder_outputs)
-    # print(f"{text_tokenzier.model_max_length=}")
-
-
-    # text_input_ids = text_inputs.input_ids
-    # untruncated_ids = text_tokenzier(text, padding="longest", return_tensors="pt").input_ids
-
-    # if untruncated_ids.shape[-1] >= text_input_ids.shape[-1] and not torch.equal(
-    #     text_input_ids, untruncated_ids
-    # ):
-    #     print("this is running?")
-    #     removed_text = text_tokenzier.batch_decode(
-    #         untruncated_ids[:, text_tokenzier.model_max_length - 1 : -1]
-    #     )
-    #     logger.warning(
-    #         "The following part of your input was truncated because CLIP can only handle sequences up to"
-    #         f" {text_tokenzier.model_max_length} tokens: {removed_text}"
-    #     )
-
-    # if hasattr(text_encoder.config, "use_attention_mask") and text_tokenzier.text_encoder.config.use_attention_mask:
-    #     attention_mask = text_inputs.attention_mask
-    # else:
-    #     attention_mask = None
-
-    # print("attention_mask: ",attention_mask)
-
-    # print(f"{text_input_ids.shape=}")
-    # prompt_embeds = text_encoder(text_input_ids, attention_mask=attention_mask)
-    # prompt_embeds_0 = prompt_embeds[0] ## all tokens even the padding tokens
-    # print(f"{prompt_embeds_0.shape=}")
-    # print(f"{prompt_embeds[1].shape=}")
-    # prompt_embeds = prompt_embeds[1].unsqueeze(1)
-    # print(f"{prompt_embeds.shape=}")
-
-    # print('test EpicKitchensDataset')
-    # epicKichensDataset = EpicKitchensDataset()
-
-    # for i in range(10):
-    #     print(epicKichensDataset[i])
