@@ -1,0 +1,7 @@
+data_pipeline/data/EPIC-KITCHENS/P02/rgb_frames/P02_101/frame_0000010074.jpg,close butter
+data_pipeline/data/EPIC-KITCHENS/P02/rgb_frames/P02_101/frame_0000011567.jpg,pick up mug
+data_pipeline/data/EPIC-KITCHENS/P07/rgb_frames/P07_101/frame_0000022789.jpg,close oven
+data_pipeline/data/EPIC-KITCHENS/P07/rgb_frames/P07_101/frame_0000017025.jpg,grab cheese
+data_pipeline/data/EPIC-KITCHENS/P07/rgb_frames/P07_115/frame_0000003036.jpg,grab lid
+data_pipeline/data/EPIC-KITCHENS/P09/rgb_frames/P09_103/frame_0000011706.jpg,clean hands
+data_pipeline/data/EPIC-KITCHENS/P17/rgb_frames/P17_01/frame_0000000742.jpg,open box
